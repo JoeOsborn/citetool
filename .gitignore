@@ -12,4 +12,8 @@ pom.xml
 .lein-repl-history
 .lein-plugins/
 .repl
+pom.xml
+pom.xml.asc
+/checkouts/
+.lein-failures
 .nrepl-port
