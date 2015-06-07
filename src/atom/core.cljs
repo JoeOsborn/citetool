@@ -12,9 +12,9 @@
                                   :height 600})))
   ; Path is relative to the compiled js file (main.js in our case)
   (.loadUrl @main-window "http://localhost:3449/index.html")
+  (.openDevTools @main-window #js {:detach true})
   (.on @main-window "closed" #(reset! main-window nil)))
 
 (.start crash-reporter)
-(.on app "window-all-closed" #(when-not (= js/process.platform "darwin")
-                                (.quit app)))
+(.on app "window-all-closed" #(.quit app))
 (.on app "ready" init-browser)
