@@ -106,9 +106,25 @@
     (clip 0 (floor (/ x frames-per-pixel)) duration)))
 
 (defn jump-to-frame! [frame]
+  (println "jump to " frame)
   (swap! app-state update-in [:now] (fn [_] frame)))
 
-(defn timeline [data owner {w :width h :height}]
+; Do this goofy declare/remove/define/add dance to make sure we don't put two
+; event handlers on the document.
+(declare handle-keyboard!)
+(.removeEventListener js/document "keydown" handle-keyboard!)
+(defn handle-keyboard! [e]
+  (println "K:" (.-keyCode e))
+  (case (.-keyCode e)
+    38 true                                                 ; up
+    40 true                                                 ; down
+    37 (jump-to-frame! (dec (:now @app-state)))             ; left
+    39 (jump-to-frame! (inc (:now @app-state)))             ; right
+    true)
+  (.preventDefault e))
+(.addEventListener js/document "keydown" handle-keyboard!)
+
+(defn timeline [data owner {w :width h :height y :y}]
   (reify
     om/IWillMount
     (will-mount [_]
@@ -118,39 +134,39 @@
       true)
     om/IRenderState
     (render-state [_ {}]
-      (dom/div
-        (clj->js {:style {:overflow-x "scroll"
-                          :position   :absolute
-                          :left       0
-                          :top        (str 480 "px")
-                          :width      (str w "px")
-                          :height     (str h "px")}})
-        (dom/div (clj->js {:style   {:backgroundColor     "rgb(50,50,200)"
-                                     :border              "16px solid green"
-                                     :border-left-width   "8px"
-                                     :border-right-width  "8px"
-                                     :border-bottom-width "0px"
-                                     :width               (str (* (/ w (:context (:timeline data)))
-                                                                  (:duration data))
-                                                               "px")
-                                     :height              (str (- h 31) "px")}
-                           :onClick (fn [e]
-                                      (let [mx (.-pageX e)
-                                            target (om/get-node owner)
-                                            ol (.-scrollLeft target)
-                                            mx (+ mx ol)
-                                            mx (- mx 8)
-                                            ctx (:context @(:timeline data))
-                                            dur (:duration data)]
-                                        (jump-to-frame! (inv-frame-offset-x mx w ctx dur))))}))
-        (dom/div (clj->js {:style {:border         "4px solid red"
-                                   :width          "4px" :height (str (- h 24) "px")
-                                   :position       :absolute
-                                   :pointer-events :none
-                                   :left           (+ 2 (frame-offset-x (:now data)
-                                                                        w
-                                                                        (:context (:timeline data))))
-                                   :top            0}}))))))
+      (let [context (:context (:timeline data))
+            now (:now data)
+            duration (:duration data)]
+        (dom/div
+          (clj->js {:style {:overflow-x "scroll"
+                            :position   :absolute
+                            :left       0
+                            :top        (str y "px")
+                            :width      (str w "px")
+                            :height     (str h "px")}})
+          (dom/div (clj->js {:style   {:backgroundColor     "rgb(50,50,200)"
+                                       :border              "16px solid green"
+                                       :border-left-width   "8px"
+                                       :border-right-width  "8px"
+                                       :border-bottom-width "0px"
+                                       :width               (str (* (/ w context) duration) "px")
+                                       :height              (str (- h 31) "px")}
+                             :onClick (fn [e]
+                                        (let [mx (.-pageX e)
+                                              target (om/get-node owner)
+                                              ol (.-scrollLeft target)
+                                              mx (+ mx ol)
+                                              mx (- mx 8)
+                                              ctx (:context @(:timeline data))
+                                              dur (:duration data)]
+                                          (jump-to-frame! (inv-frame-offset-x mx w ctx dur))))}))
+          (dom/div (clj->js {:style {:border         "4px solid red"
+                                     :width          "4px"
+                                     :height         (str (- h 24) "px")
+                                     :position       :absolute
+                                     :pointer-events :none
+                                     :left           (+ 2 (frame-offset-x now w context))
+                                     :top            0}})))))))
 
 (def app-state (atom {:source      (frame-image-provider)
                       :metadata    {}
@@ -165,14 +181,14 @@
   (fn [data _owner]
     (reify om/IRender
       (render [_]
-        (dom/div nil
+        (dom/div {}
                  (om/build async-image data)
                  (om/build timeline
                            {:timeline (:timeline data)
                             :now      (:now data)
                             :edits    (:edits data)
                             :duration (:duration data)}
-                           {:opts {:width 800 :height 100}})))))
+                           {:opts {:width 800 :height 100 :y 480}})))))
   app-state
   {:target (.getElementById js/document "app")})
 
