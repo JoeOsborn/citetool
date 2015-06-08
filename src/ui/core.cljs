@@ -16,11 +16,7 @@
   :jsload-callback on-js-reload)
 
 (defn on-js-reload []
-  ;; optionally touch your app-state to force rerendering depending on
-  ;; your application
   (swap! app-state update-in [:__figwheel_counter] inc))
-
-;; define your app data so that it doesn't get over-written on reload
 
 (defonce offscreen-canvas (clojure.browser.dom/html->dom "<canvas/>"))
 
@@ -31,13 +27,6 @@
     (set! (.-width offscreen-canvas) w)
     (set! (.-height offscreen-canvas) h)
     (let [ctx (.getContext offscreen-canvas "2d")]
-      #_(
-      ctx.fillStyle = "rgb(255,255,255)";
-      ctx.fillRect(0, 0, 64, 64);
-      ctx.fillStyle = "rgb(0,0,0)";
-      ctx.textAlign = "center"
-      ctx.fillText((str frame),0,0,64)
-      )
       (set! (.-fillStyle ctx) "rgb(200,200,200)")
       (.fillRect ctx 0 0 w h)
       (set! (.-textAlign ctx) "center")
@@ -53,35 +42,37 @@
     (async-m/go-loop
       []
       (let [request (async/<! requests)]
-        (async/<! (async/timeout 1000))
+        (async/<! (async/timeout 500))
         (if-let [{frame :frame} request]
           (async/>! responses {:frame frame, :image-data (frame-image-data frame)})
           (println "Unrecognized request " request))
         (recur)))
     {:out (async/pub responses :frame) :in requests}))
 
-(defonce star-img "data:image/gif;base64,R0lGODlhEAAQAMQAAORHHOVSKudfOulrSOp3WOyDZu6QdvCchPGolfO0o/XBs/fNwfjZ0frl3/zy7////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACH5BAkAABAALAAAAAAQABAAAAVVICSOZGlCQAosJ6mu7fiyZeKqNKToQGDsM8hBADgUXoGAiqhSvp5QAnQKGIgUhwFUYLCVDFCrKUE1lBavAViFIDlTImbKC5Gm2hB0SlBCBMQiB0UjIQA7")
+(defonce
+  star-img
+  (str "data:image/gif;base64,R0lGODlhEAAQAMQAAORHHOVSKudfOulrSOp3WOyDZu6QdvCchPGolfO0o/XBs/fNwfjZ0f"
+       "rl3/zy7////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACH5BAkAABAALAAAAAAQA"
+       "BAAAAVVICSOZGlCQAosJ6mu7fiyZeKqNKToQGDsM8hBADgUXoGAiqhSvp5QAnQKGIgUhwFUYLCVDFCrKUE1lBav"
+       "AViFIDlTImbKC5Gm2hB0SlBCBMQiB0UjIQA7"))
 
-(defonce app-state (atom {:text "Hello!" :source (frame-image-provider) :frame 1}))
-
+; Provider should be an {:out pub :in chan} map
 (defn request-frame [provider frame]
   (let [resp (async/chan)]
-    (async-m/go
-      (async/sub (:out provider) frame resp true)
-      (async/>! (:in provider) {:frame frame}))
+    (async/sub (:out provider) frame resp true)
+    (async/put! (:in provider) {:frame frame})
     {:channel resp :stand-in star-img}))
 
-;(defprotocol IImgSource
-;  "Produces AsyncImages on demand."
-;  (request-frame [this frame]) ; -> {:channel channel , :stand-in image-url}
-;  (preload-frames [this low high step))
-
-(defn- update-async-image- [data owner]
-  (let [{receipt :channel standin :stand-in} (request-frame (:source data) (:frame data))]
-    (om/set-state! owner {:image-data standin})
+(defn- -update-async-image [data owner]
+  (let [{receipt :channel standin :stand-in} (request-frame (:source data) (:now data))
+        old-receipt (:receipt (om/get-state owner))]
+    (when old-receipt
+      (async/close! old-receipt))
+    (om/set-state! owner {:image-data standin :frame (:now data) :receipt receipt})
     (async-m/go
       (let [state-data (async/<! receipt)]
-        (om/set-state! owner state-data)
+        (when (and state-data (= (:now (om/get-props owner)) (:now data)))
+          (om/set-state! owner state-data))
         (async/close! receipt)
         ))))
 
@@ -89,21 +80,100 @@
   (reify
     om/IWillMount
     (will-mount [_]
-      (println "MOUNT make query for " (:frame data))
-      (update-async-image- data owner))
+      (println "MOUNT make query for " (:now data))
+      (-update-async-image data owner))
     om/IWillReceiveProps
     (will-receive-props [_ new-props]
-      (println "RECV make query for " (:frame new-props))
+      (println "RECV make query for " (:now new-props))
       (when-not (= new-props (om/get-props owner))
-        (update-async-image- new-props owner)))
+        (-update-async-image new-props owner)))
     om/IRenderState
     (render-state [_ {image-data :image-data}]
-      (dom/img #js {:src image-data :width 320 :height 240}))))
+      (dom/img (clj->js {:src   image-data :width 640 :height 480
+                         :style {:margin-left 80}})))))
+
+(defn frame-offset-x [frame scroll-width context]
+  (let [frames-per-pixel (/ scroll-width context)]
+    (* frames-per-pixel frame)))
+
+(defn floor [a] (.floor js/Math a))
+
+(defn clip [lo x hi]
+  (min hi (max lo x)))
+
+(defn inv-frame-offset-x [x scroll-width context duration]
+  (let [frames-per-pixel (/ scroll-width context)]
+    (clip 0 (floor (/ x frames-per-pixel)) duration)))
+
+(defn jump-to-frame! [frame]
+  (swap! app-state update-in [:now] (fn [_] frame)))
+
+(defn timeline [data owner {w :width h :height}]
+  (reify
+    om/IWillMount
+    (will-mount [_]
+      true)
+    om/IWillReceiveProps
+    (will-receive-props [_ _new-props]
+      true)
+    om/IRenderState
+    (render-state [_ {}]
+      (dom/div
+        (clj->js {:style {:overflow-x "scroll"
+                          :position   :absolute
+                          :left       0
+                          :top        (str 480 "px")
+                          :width      (str w "px")
+                          :height     (str h "px")}})
+        (dom/div (clj->js {:style   {:backgroundColor     "rgb(50,50,200)"
+                                     :border              "16px solid green"
+                                     :border-left-width   "8px"
+                                     :border-right-width  "8px"
+                                     :border-bottom-width "0px"
+                                     :width               (str (* (/ w (:context (:timeline data)))
+                                                                  (:duration data))
+                                                               "px")
+                                     :height              (str (- h 31) "px")}
+                           :onClick (fn [e]
+                                      (let [mx (.-pageX e)
+                                            target (om/get-node owner)
+                                            ol (.-scrollLeft target)
+                                            mx (+ mx ol)
+                                            mx (- mx 8)
+                                            ctx (:context @(:timeline data))
+                                            dur (:duration data)]
+                                        (jump-to-frame! (inv-frame-offset-x mx w ctx dur))))}))
+        (dom/div (clj->js {:style {:border         "4px solid red"
+                                   :width          "4px" :height (str (- h 24) "px")
+                                   :position       :absolute
+                                   :pointer-events :none
+                                   :left           (+ 2 (frame-offset-x (:now data)
+                                                                        w
+                                                                        (:context (:timeline data))))
+                                   :top            0}}))))))
+
+(def app-state (atom {:source      (frame-image-provider)
+                      :metadata    {}
+                      :now         1
+                      :timeline    {:context  1000
+                                    :scroll-x 0}
+                      :annotations []
+                      :edits       []
+                      :duration    2000}))
 
 (om/root
   (fn [data _owner]
     (reify om/IRender
       (render [_]
-        (om/build async-image data))))
+        (dom/div nil
+                 (om/build async-image data)
+                 (om/build timeline
+                           {:timeline (:timeline data)
+                            :now      (:now data)
+                            :edits    (:edits data)
+                            :duration (:duration data)}
+                           {:opts {:width 800 :height 100}})))))
   app-state
   {:target (.getElementById js/document "app")})
+
+;(.setTimeout js/window (fn [] (swap! app-state update-in [:frame] inc)) 2000)
