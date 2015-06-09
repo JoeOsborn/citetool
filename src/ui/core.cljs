@@ -3,7 +3,8 @@
             [cljs.core.async :as async]
             [clojure.browser.dom]
             [om.core :as om :include-macros true]
-            [om.dom :as dom :include-macros true])
+            [om.dom :as dom :include-macros true]
+            [goog.string :as gstring])
   (:require-macros [cljs.core.async.macros :as async-m]))
 
 (enable-console-print!)
@@ -20,6 +21,47 @@
 
 (defonce offscreen-canvas (clojure.browser.dom/html->dom "<canvas/>"))
 
+(defn floor [a] (.floor js/Math a))
+
+(defn clip [lo x hi]
+  (min hi (max lo x)))
+
+(defn prev-item [item items]
+  (or (last (filter #(< % item) items)) (first items)))
+
+(defn next-item [item items]
+  (or (first (filter #(> % item) items)) (last items)))
+
+(defn prev-or-eq-item [item items]
+  (or (last (filter #(<= % item) items)) (first items)))
+
+(defn next-or-eq-item [item items]
+  (or (first (filter #(>= % item) items)) (last items)))
+
+(defn pad-right [s filler min-len]
+  (if (>= (.-length s) min-len)
+    s
+    (recur (str s filler) filler min-len)))
+
+(defn pad-left [s filler min-len]
+  (if (>= (.-length s) min-len)
+    s
+    (recur (str filler s) filler min-len)))
+
+(defn frame->time-string [frame]
+  (let [h (floor (/ frame 108000))
+        frame (- frame (* h 108000))
+        m (floor (/ frame 1800))
+        frame (- frame (* m 1800))
+        s (floor (/ frame 30))
+        frame (- frame (* s 30))
+        ; frame to millisecond = (seconds/frame) * frame * (milliseconds/second)
+        millis (floor (* (/ 1 30) frame 1000))]
+    (str (pad-left (str h) "0" 2) ":"
+         (pad-left (str m) "0" 2) ":"
+         (pad-left (str s) "0" 2) "."
+         (pad-right (str millis) "0" 3))))
+
 (defn frame-image-data [frame]
   (let [w 320
         h 240
@@ -33,7 +75,8 @@
       (set! (.-fillStyle ctx) "rgb(255,0,0)")
       (println "frame:" (str frame))
       (set! (.-font ctx) (str f "px serif"))
-      (.fillText ctx (str frame) (/ w 2) (+ (/ h 2) (/ f 4)) w)
+      (.fillText ctx (str "fm " frame) (/ w 2) (+ (/ h 4) (/ f 4)) w)
+      (.fillText ctx (str (frame->time-string frame)) (/ w 2) (+ (* 3 (/ h 4)) (/ f 4)) w)
       (.toDataURL offscreen-canvas))))
 
 (defn frame-image-provider []
@@ -93,10 +136,6 @@
       (dom/img (clj->js {:src   image-data :width 640 :height 480
                          :style {:margin-left 80}})))))
 
-(defn floor [a] (.floor js/Math a))
-
-(defn clip [lo x hi]
-  (min hi (max lo x)))
 
 (defn frame-offset-x [frame scroll-width context]
   (let [frames-per-pixel (/ scroll-width context)]
@@ -106,9 +145,21 @@
   (let [frames-per-pixel (/ scroll-width context)]
     (clip 0 (floor (/ x frames-per-pixel)) (dec duration))))
 
+(def skip-levels
+  (concat [1 5 10 15]                                       ;frames per tick
+          [30 150 300 900]                                  ;seconds per tick
+          [1800 9000 18000 54000]                           ;minutes per tick
+          [108000]                                          ;hours per tick
+          ))
+
+(def tick-proximity-max 16)
+
+(defn max-tick-count [visible-width] (floor (/ visible-width tick-proximity-max)))
+(defn current-skip-level [visible-width context]
+  (next-or-eq-item (/ context (max-tick-count visible-width)) skip-levels))
+
 (defn shown-tick-frames [visible-width context left-x right-x duration]
-  (let [; todo: calculate frame skip from visible-width and context
-        frame-skip 32
+  (let [frame-skip (current-skip-level visible-width context)
         left-frame (inv-frame-offset-x left-x visible-width context duration)
         left-frame (- left-frame (mod left-frame frame-skip))
         right-frame (inv-frame-offset-x right-x visible-width context duration)
@@ -120,16 +171,6 @@
                  (concat frames-maybe-missing-end [last-frame]))]
     frames))
 
-(def -context-levels
-  (concat [1 5 10 15]                                       ;frames per tick
-          [30 150 300 900]                                  ;seconds per tick
-          [1800 9000 18000 54000]                           ;minutes per tick
-          [108000]                                          ;hours per tick
-          ))
-
-(defn context-levels [duration]
-  (concat (filter #(< % duration) -context-levels) [duration]))
-
 (defn jump-to-frame! [frame]
   (println "jump to " frame)
   (swap! app-state update-in [:now] (fn [_] (clip 0 frame (:duration @app-state))))
@@ -138,19 +179,12 @@
 
 (defn change-context! [ctx]
   (println "change context" ctx)
-  (let [context-levels (context-levels (:duration @app-state))]
-    (swap! app-state update-in [:timeline :context]
-           (fn [_] (clip (first context-levels)
-                         ctx
-                         (last context-levels))))
-    ;jump scroll-x
-    ))
-
-(defn prev-item [item items]
-  (or (last (filter #(< % item) items)) (first items)))
-
-(defn next-item [item items]
-  (or (first (filter #(> % item) items)) (last items)))
+  (swap! app-state update-in [:timeline :context]
+         (fn [_] (clip (max-tick-count (:scroll-width @app-state))
+                       ctx
+                       (:duration @app-state))))
+  ;jump scroll-x
+  )
 
 ; Do this goofy declare/remove/define/add dance to make sure we don't put two
 ; event handlers on the document.
@@ -161,7 +195,7 @@
   (let [now (:now @app-state)
         context (:context (:timeline @app-state))
         duration (:duration @app-state)
-        left-x (get-in @app-state [:timeline :scroll-x])
+        ;left-x (get-in @app-state [:timeline :scroll-x])
         scroll-width (:scroll-width @app-state)
         shown-ticks (shown-tick-frames scroll-width
                                        context
@@ -170,12 +204,10 @@
                                        duration)
         nearest-tick-left (prev-item now shown-ticks)
         nearest-tick-right (next-item now shown-ticks)
-        context-levs (context-levels duration)
-        nearest-level-down (prev-item context context-levs)
-        nearest-level-up (next-item context context-levs)]
+        context-step (floor (* duration 0.05))]
     (case (.-keyCode e)
-      38 (change-context! nearest-level-up)                 ; up
-      40 (change-context! nearest-level-down)               ; down
+      38 (change-context! (+ context context-step))         ; up
+      40 (change-context! (- context context-step))         ; down
       37 (jump-to-frame! (if (.-shiftKey e)                 ; left
                            nearest-tick-left
                            (dec now)))
