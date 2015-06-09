@@ -124,26 +124,44 @@
   (.preventDefault e))
 (.addEventListener js/document "keydown" handle-keyboard!)
 
+(defn tick-mark [data _owner {w :width}]
+  (reify
+    om/IRender
+    (render [_]
+      (dom/div (clj->js {:style {:border         "1px solid grey"
+                                 :width          "0px"
+                                 :height         "96%"
+                                 :position       :absolute
+                                 :left           (+ 6 (* (/ w (:context data)) (:frame data)))
+                                 :top            0
+                                 :pointer-events "none"}})))))
+
+
+(defn shown-tick-frames [w context left duration]
+  (let [left-frame (inv-frame-offset-x left w context duration)]
+    (range left-frame (min (+ left-frame context) duration) 16)))
+
 (defn timeline [data owner {w :width h :height y :y}]
   (reify
-    om/IWillMount
-    (will-mount [_]
-      true)
-    om/IWillReceiveProps
-    (will-receive-props [_ _new-props]
-      true)
+    om/IInitState
+    (init-state [_] {:scroll-x 0})
+    om/IDidMount
+    (did-mount [_]
+      (om/set-state! owner {:scroll-x (.-scrollLeft (om/get-node owner))}))
     om/IRenderState
-    (render-state [_ {}]
+    (render-state [_ {scroll-x :scroll-x}]
       (let [context (:context (:timeline data))
             now (:now data)
             duration (:duration data)]
         (dom/div
-          (clj->js {:style {:overflow-x "scroll"
-                            :position   :absolute
-                            :left       0
-                            :top        (str y "px")
-                            :width      (str w "px")
-                            :height     (str h "px")}})
+          (clj->js {:style    {:overflow-x "scroll"
+                               :position   :absolute
+                               :left       0
+                               :top        (str y "px")
+                               :width      (str w "px")
+                               :height     (str h "px")}
+                    :onScroll (fn [_e]
+                                (om/set-state! owner {:scroll-x (.-scrollLeft (om/get-node owner))}))})
           (dom/div (clj->js {:style   {:backgroundColor     "rgb(50,50,200)"
                                        :border              "16px solid green"
                                        :border-left-width   "8px"
@@ -153,24 +171,31 @@
                                        :height              (str (- h 31) "px")}
                              :onClick (fn [e]
                                         (let [mx (.-pageX e)
-                                              target (om/get-node owner)
-                                              ol (.-scrollLeft target)
+                                              scroll-box (om/get-node owner)
+                                              ol (.-scrollLeft scroll-box)
                                               mx (+ mx ol)
                                               mx (- mx 8)
                                               ctx (:context @(:timeline data))
                                               dur (:duration data)]
                                           (jump-to-frame! (inv-frame-offset-x mx w ctx dur))))}))
+          (apply dom/div nil (om/build-all tick-mark
+                                           (map (fn [f] {:frame f :context context})
+                                                (shown-tick-frames w
+                                                                   context
+                                                                   scroll-x
+                                                                   duration))
+                                           {:opts {:width w}}))
           (dom/div (clj->js {:style {:border         "4px solid red"
                                      :width          "4px"
-                                     :height         (str (- h 24) "px")
+                                     :height         "90%"
                                      :position       :absolute
-                                     :pointer-events :none
-                                     :left           (+ 2 (frame-offset-x now w context))
+                                     :pointer-events "none"
+                                     :left           (+ 1 (frame-offset-x now w context))
                                      :top            0}})))))))
 
 (def app-state (atom {:source      (frame-image-provider)
                       :metadata    {}
-                      :now         1
+                      :now         0
                       :timeline    {:context  1000
                                     :scroll-x 0}
                       :annotations []
@@ -188,7 +213,7 @@
                             :now      (:now data)
                             :edits    (:edits data)
                             :duration (:duration data)}
-                           {:opts {:width 800 :height 100 :y 480}})))))
+                           {:opts {:width 800 :height 100 :y 478}})))))
   app-state
   {:target (.getElementById js/document "app")})
 
