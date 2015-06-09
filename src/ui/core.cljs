@@ -106,11 +106,13 @@
   (let [frames-per-pixel (/ scroll-width context)]
     (clip 0 (floor (/ x frames-per-pixel)) (dec duration))))
 
-(defn shown-tick-frames [w context left-x duration]
-  (let [frame-skip 32
-        left-frame (inv-frame-offset-x left-x w context duration)
+(defn shown-tick-frames [visible-width context left-x right-x duration]
+  (let [; todo: calculate frame skip from visible-width and context
+        frame-skip 32
+        left-frame (inv-frame-offset-x left-x visible-width context duration)
         left-frame (- left-frame (mod left-frame frame-skip))
-        right-frame (+ left-frame context frame-skip)
+        right-frame (inv-frame-offset-x right-x visible-width context duration)
+        right-frame (+ (- right-frame (mod right-frame frame-skip)) frame-skip)
         last-frame (dec duration)
         frames-maybe-missing-end (range left-frame (min right-frame last-frame) frame-skip)
         frames (if (< right-frame last-frame)
@@ -118,11 +120,37 @@
                  (concat frames-maybe-missing-end [last-frame]))]
     frames))
 
+(def -context-levels
+  (concat [1 5 10 15]                                       ;frames per tick
+          [30 150 300 900]                                  ;seconds per tick
+          [1800 9000 18000 54000]                           ;minutes per tick
+          [108000]                                          ;hours per tick
+          ))
+
+(defn context-levels [duration]
+  (concat (filter #(< % duration) -context-levels) [duration]))
+
 (defn jump-to-frame! [frame]
   (println "jump to " frame)
-  (swap! app-state update-in [:now] (fn [_] frame))
+  (swap! app-state update-in [:now] (fn [_] (clip 0 frame (:duration @app-state))))
   ;jump scroll-x
   )
+
+(defn change-context! [ctx]
+  (println "change context" ctx)
+  (let [context-levels (context-levels (:duration @app-state))]
+    (swap! app-state update-in [:timeline :context]
+           (fn [_] (clip (first context-levels)
+                         ctx
+                         (last context-levels))))
+    ;jump scroll-x
+    ))
+
+(defn prev-item [item items]
+  (or (last (filter #(< % item) items)) (first items)))
+
+(defn next-item [item items]
+  (or (first (filter #(> % item) items)) (last items)))
 
 ; Do this goofy declare/remove/define/add dance to make sure we don't put two
 ; event handlers on the document.
@@ -131,23 +159,29 @@
 (defn handle-keyboard! [e]
   (println "K:" (.-keyCode e) "shift:" (.-shiftKey e))
   (let [now (:now @app-state)
+        context (:context (:timeline @app-state))
         duration (:duration @app-state)
         left-x (get-in @app-state [:timeline :scroll-x])
         scroll-width (:scroll-width @app-state)
-        shown-ticks (shown-tick-frames scroll-width (:context (:timeline @app-state)) left-x duration)
-        nearest-tick-left (or (last (filter #(< % now) shown-ticks)) 0)
-        nearest-tick-right (or (first (filter #(> % now) shown-ticks)) (dec duration))]
+        shown-ticks (shown-tick-frames scroll-width
+                                       context
+                                       0
+                                       (frame-offset-x (dec duration) scroll-width context)
+                                       duration)
+        nearest-tick-left (prev-item now shown-ticks)
+        nearest-tick-right (next-item now shown-ticks)
+        context-levs (context-levels duration)
+        nearest-level-down (prev-item context context-levs)
+        nearest-level-up (next-item context context-levs)]
     (case (.-keyCode e)
-      38 true                                               ; up
-      40 true                                               ; down
-      37 (jump-to-frame! (max 0                             ; left
-                              (if (.-shiftKey e)
-                                nearest-tick-left
-                                (dec now))))
-      39 (jump-to-frame! (min (dec duration)                ; right
-                              (if (.-shiftKey e)
-                                nearest-tick-right
-                                (inc now))))
+      38 (change-context! nearest-level-up)                 ; up
+      40 (change-context! nearest-level-down)               ; down
+      37 (jump-to-frame! (if (.-shiftKey e)                 ; left
+                           nearest-tick-left
+                           (dec now)))
+      39 (jump-to-frame! (if (.-shiftKey e)                 ; right
+                           nearest-tick-right
+                           (inc now)))
       true)
     (.preventDefault e)))
 (.addEventListener js/document "keydown" handle-keyboard!)
@@ -212,6 +246,7 @@
                                                 (shown-tick-frames w
                                                                    context
                                                                    scroll-x
+                                                                   (+ scroll-x w)
                                                                    duration))
                                            {:opts {:width w}}))
           (dom/div (clj->js {:style {:border         "4px solid red"
@@ -225,7 +260,7 @@
 (def app-state (atom {:source       (frame-image-provider)
                       :metadata     {}
                       :now          0
-                      :timeline     {:context  1000
+                      :timeline     {:context  900
                                      :scroll-x 0}
                       :scroll-width 800
                       :annotations  []
