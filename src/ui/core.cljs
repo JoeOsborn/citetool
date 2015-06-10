@@ -48,7 +48,7 @@
     s
     (recur (str filler s) filler min-len)))
 
-(defn frame->time-string [frame]
+(defn frame->timecode [frame pad-units]
   (let [h (floor (/ frame 108000))
         frame (- frame (* h 108000))
         m (floor (/ frame 1800))
@@ -57,9 +57,9 @@
         frame (- frame (* s 30))
         ; frame to millisecond = (seconds/frame) * frame * (milliseconds/second)
         millis (floor (* (/ 1 30) frame 1000))]
-    (str (pad-left (str h) "0" 2) ":"
-         (pad-left (str m) "0" 2) ":"
-         (pad-left (str s) "0" 2) "."
+    (str (if (or pad-units (> h 0)) (str (pad-left (str h) "0" 2) ":") "")
+         (if (or pad-units (> m 0) (> h 0)) (str (pad-left (str m) "0" 2) ":") "")
+         (if (or pad-units (> s 0) (> m 0) (> h 0)) (str (pad-left (str s) "0" 2) ":") "")
          (pad-right (str millis) "0" 3))))
 
 (defn frame-image-data [frame]
@@ -76,7 +76,7 @@
       (println "frame:" (str frame))
       (set! (.-font ctx) (str f "px serif"))
       (.fillText ctx (str "fm " frame) (/ w 2) (+ (/ h 4) (/ f 4)) w)
-      (.fillText ctx (str (frame->time-string frame)) (/ w 2) (+ (* 3 (/ h 4)) (/ f 4)) w)
+      (.fillText ctx (str (frame->timecode frame true)) (/ w 2) (+ (* 3 (/ h 4)) (/ f 4)) w)
       (.toDataURL offscreen-canvas))))
 
 (defn frame-image-provider []
