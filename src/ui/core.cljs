@@ -205,11 +205,12 @@
   (set! -context-scroller (.requestAnimationFrame js/window -context-scroller-fn)))
 
 
+(defn clip-context [ctx scroll-width duration]
+  (clip (max-tick-count scroll-width) ctx duration))
+
 (defn change-context! [ctx]
   (println "change context" ctx)
-  (let [target (clip (max-tick-count (:scroll-width @app-state))
-                     ctx
-                     (:duration @app-state))]
+  (let [target (clip-context ctx (:scroll-width @app-state) (:duration @app-state))]
     (swap! app-state update-in [:timeline]
            (fn [old]
              (merge old {:target-context target
@@ -295,6 +296,21 @@
                                :top        (str y "px")
                                :width      (str w "px")
                                :height     (str h "px")}
+                    :onWheel  (fn [e]
+                                (let [dx (.-deltaX e)
+                                      dy (.-deltaY e)]
+                                  (when (and (not= 0 dy) (= (abs dx) 0))
+                                    (do
+                                      (om/transact! (:timeline data)
+                                                    []
+                                                    (fn [{ctx :context :as timeline}]
+                                                      (let [new-ctx (clip-context (floor (+ ctx dy))
+                                                                                  (:scroll-width @app-state)
+                                                                                  (:duration @app-state))]
+                                                        (assoc timeline
+                                                          :context new-ctx
+                                                          :source-context new-ctx
+                                                          :target-context new-ctx))))))))
                     :onScroll (fn [_e]
                                 (om/transact! (:timeline data)
                                               [:scroll-x]
