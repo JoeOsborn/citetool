@@ -146,9 +146,9 @@
     (clip 0 (floor (/ x frames-per-pixel)) (dec duration))))
 
 (def skip-levels
-  (concat [1 5 10 15]                                       ;frames per tick
-          [30 150 300 900]                                  ;seconds per tick
-          [1800 9000 18000 54000]                           ;minutes per tick
+  (concat [1 5 10]                                          ;frames per tick
+          [30 150 300]                                      ;seconds per tick
+          [1800 9000 18000]                                 ;minutes per tick
           [108000]                                          ;hours per tick
           ))
 
@@ -177,12 +177,44 @@
   ;jump scroll-x
   )
 
+(defn abs [a] (.abs js/Math a))
+
+(defonce -context-scroller nil)
+(declare start-scrolling-context!)
+(declare stop-scrolling-context!)
+(defn -context-scroller-fn [_now]
+  (let [ctx (get-in @app-state [:timeline :context])
+        tgt (get-in @app-state [:timeline :target-context])
+        src (get-in @app-state [:timeline :source-context])
+        remaining (abs (- tgt ctx))
+        ;todo:something smart with _now, dt stuff
+        ;ratio (- 1 (/ remaining (abs (- tgt src))))
+        vel (/ (- tgt src) 15)]                             ; take approx 15 frames to get there
+    (if (<= remaining (abs vel))
+      (do
+        (swap! app-state update-in [:timeline :context] (fn [_] tgt))
+        (stop-scrolling-context!))
+      (do
+        (swap! app-state update-in [:timeline :context] (fn [_] (+ ctx vel)))
+        (start-scrolling-context!)))))
+
+(defn stop-scrolling-context! []
+  (when -context-scroller (.cancelAnimationFrame js/window -context-scroller-fn)))
+(defn start-scrolling-context! []
+  (stop-scrolling-context!)
+  (set! -context-scroller (.requestAnimationFrame js/window -context-scroller-fn)))
+
+
 (defn change-context! [ctx]
   (println "change context" ctx)
-  (swap! app-state update-in [:timeline :context]
-         (fn [_] (clip (max-tick-count (:scroll-width @app-state))
-                       ctx
-                       (:duration @app-state))))
+  (let [target (clip (max-tick-count (:scroll-width @app-state))
+                     ctx
+                     (:duration @app-state))]
+    (swap! app-state update-in [:timeline]
+           (fn [old]
+             (merge old {:target-context target
+                         :source-context (:context old)})))
+    (start-scrolling-context!))
   ;jump scroll-x
   )
 
@@ -202,16 +234,26 @@
                                        0
                                        (frame-offset-x (dec duration) scroll-width context)
                                        duration)
+        max-ticks (max-tick-count scroll-width)
         nearest-tick-left (prev-item now shown-ticks)
         nearest-tick-right (next-item now shown-ticks)
-        context-step (floor (* duration 0.05))]
+        context-step (floor (* duration 0.05))
+        frame-skip (current-skip-level scroll-width context)
+        nearest-skip-down (prev-item frame-skip skip-levels)
+        nearest-skip-up (next-item frame-skip skip-levels)
+
+        shift (.-shiftKey e)]
     (case (.-keyCode e)
-      38 (change-context! (+ context context-step))         ; up
-      40 (change-context! (- context context-step))         ; down
-      37 (jump-to-frame! (if (.-shiftKey e)                 ; left
+      38 (change-context! (if shift                         ; up
+                            (* nearest-skip-up max-ticks)
+                            (+ context context-step)))
+      40 (change-context! (if shift                         ; down
+                            (* nearest-skip-down max-ticks)
+                            (- context context-step)))
+      37 (jump-to-frame! (if shift                          ; left
                            nearest-tick-left
                            (dec now)))
-      39 (jump-to-frame! (if (.-shiftKey e)                 ; right
+      39 (jump-to-frame! (if shift                          ; right
                            nearest-tick-right
                            (inc now)))
       true)
