@@ -16,7 +16,7 @@
   :jsload-callback on-js-reload)
 
 (defn on-js-reload []
-  (swap! app-state update-in [:__figwheel_counter] inc))
+  (om/transact! (om/root-cursor app-state) [:__figwheel_counter] inc))
 
 (defonce offscreen-canvas (clojure.browser.dom/html->dom "<canvas/>"))
 
@@ -210,12 +210,12 @@
     (assoc new-timeline :scroll-x new-scroll-x)))
 
 (defn jump-to-frame! [frame]
-  (println "jump to " frame)
-  (swap! app-state update-in [:timeline]
-         (fn [old-timeline]
-           (autoscroll-x-playhead old-timeline
-                                  (assoc old-timeline
-                                    :now (clip 0 frame (:duration @app-state)))))))
+  (println "jump to" frame)
+  (om/transact! (om/root-cursor app-state) [:timeline]
+              (fn [old-timeline]
+                (autoscroll-x-playhead old-timeline
+                                       (assoc old-timeline
+                                         :now (clip 0 frame (:duration @app-state)))))))
 
 (defonce -context-scroller nil)
 (declare start-scrolling-context!)
@@ -233,16 +233,16 @@
         vel (/ (- tgt src) context-animation-duration)]     ; take approx 15 frames to get there
     (if (<= remaining (abs vel))
       (do
-        (swap! app-state update-in [:timeline]
-               (fn [old]
-                 (println "swapping to" (:scroll-x (autoscroll-x-context old (assoc old :context tgt) scroll-focus-frame)))
-                 (autoscroll-x-context old (assoc old :context tgt) scroll-focus-frame)))
+        (om/transact! (om/root-cursor app-state) [:timeline]
+                    (fn [old]
+                      (println "swapping to" (:scroll-x (autoscroll-x-context old (assoc old :context tgt) scroll-focus-frame)))
+                      (autoscroll-x-context old (assoc old :context tgt) scroll-focus-frame)))
         (stop-scrolling-context!))
       (do
-        (swap! app-state update-in [:timeline]
-               (fn [old]
-                 (println "swapping to" (:scroll-x (autoscroll-x-context old (assoc old :context (+ ctx vel)) scroll-focus-frame)))
-                 (autoscroll-x-context old (assoc old :context (+ ctx vel)) scroll-focus-frame)))
+        (om/transact! (om/root-cursor app-state) [:timeline]
+                    (fn [old]
+                      (println "swapping to" (:scroll-x (autoscroll-x-context old (assoc old :context (+ ctx vel)) scroll-focus-frame)))
+                      (autoscroll-x-context old (assoc old :context (+ ctx vel)) scroll-focus-frame)))
         (start-scrolling-context!)))))
 
 (defn stop-scrolling-context! []
@@ -259,10 +259,10 @@
   (println "change context" ctx)
   (let [target (clip-context ctx (:scroll-width (:timeline @app-state)) (:duration @app-state))]
     (set! -scroll-focus-frame scroll-focus-frame)
-    (swap! app-state update-in [:timeline]
-           (fn [old]
-             (merge old {:target-context target
-                         :source-context (:context old)})))
+    (om/transact! (om/root-cursor app-state) [:timeline]
+                (fn [old]
+                  (merge old {:target-context target
+                              :source-context (:context old)})))
     (start-scrolling-context!)))
 
 ; Do this goofy declare/remove/define/add dance to make sure we don't put two
@@ -330,9 +330,9 @@
   (let [scroll-width (:scroll-width (:timeline @app-state))
         context (:context (:timeline @app-state))
         duration (:duration @app-state)]
-    (swap! app-state update-in
-           [:timeline :scroll-x]
-           #(clip 0 x (+ 16 (- (* duration (/ scroll-width context)) scroll-width))))))
+    (om/transact! (om/root-cursor app-state)
+                [:timeline :scroll-x]
+                #(clip 0 x (+ 16 (- (* duration (/ scroll-width context)) scroll-width))))))
 
 (defn scroll-thumb-width [data]
   (let [duration (get-in data [:duration])
@@ -502,5 +502,3 @@
                            {:opts {:height 100 :y 478}})))))
   app-state
   {:target (.getElementById js/document "app")})
-
-;(.setTimeout js/window (fn [] (swap! app-state update-in [:frame] inc)) 2000)
