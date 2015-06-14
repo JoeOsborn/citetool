@@ -20,6 +20,9 @@
 
 (defonce offscreen-canvas (clojure.browser.dom/html->dom "<canvas/>"))
 
+(defn page-x->element-x [x elt]
+  (+ x (.-scrollLeft elt)))
+
 (defn floor [a] (.floor js/Math a))
 
 (defn clip [lo x hi]
@@ -144,6 +147,10 @@
   (let [frames-per-pixel (/ scroll-width context)]
     (clip 0 (floor (/ x frames-per-pixel)) (dec duration))))
 
+(defn frame-visible? [f scroll-x scroll-width context]
+  (let [fx (frame-offset-x f scroll-width context)]
+    (and (>= fx scroll-x) (<= fx (+ scroll-x scroll-width)))))
+
 (def skip-levels
   (concat [1 5 10]                                          ;frames per tick
           [30 150 300]                                      ;seconds per tick
@@ -170,52 +177,72 @@
                  (concat frames-maybe-missing-end [last-frame]))]
     frames))
 
-(defn jump-to-frame! [frame]
-  (println "jump to " frame)
-  (swap! app-state update-in [:timeline :now] (fn [_] (clip 0 frame (:duration @app-state))))
-  ;jump scroll-x
-  )
 
 (defn abs [a] (.abs js/Math a))
 
-;TODO: will this have enough data? we need old scroll-x too, right? should I pass the whole app-state?
-(defn autoscroll-x-context [old-timeline new-timeline]
-  (let [; using old-timeline:
-        ; find the current frame either under the cursor or in the middle of the screen
-        ; find its x value
+(defn autoscroll-x-context [old-timeline new-timeline focus-frame]
+  (let [duration (:duration @app-state)
+        ; using old-timeline:
+        scroll-x (:scroll-x old-timeline)
+        scroll-width (:scroll-width old-timeline)
+        context (:context old-timeline)
+        focus-x (frame-offset-x focus-frame scroll-width context)
         ; find the offset of that x value from the left hand side of the visible area
+        offset (- focus-x scroll-x)
         ; using new-timeline:
+        scroll-width (:scroll-width new-timeline)
+        context (:context new-timeline)
         ; find the new x value of that frame
+        new-focus-x (frame-offset-x focus-frame scroll-width context)
         ; scroll to put that new x value at the same offset from the left hand side as before
-        new-scroll-x (:scroll-x new-timeline)]
-    (assoc new-timeline :scroll-x new-scroll-x)))
+        new-scroll-x (- new-focus-x offset)
+        clipped-new-scroll-x (clip 0
+                                   new-scroll-x
+                                   (- (* (/ scroll-width context) duration) scroll-width))]
+    (println "Old offset" offset "New offset" (- new-focus-x clipped-new-scroll-x))
+    (println "Old x" focus-x "new x" new-focus-x "old scroll" (:scroll-x old-timeline) "new scroll" clipped-new-scroll-x)
+    (assoc new-timeline
+      :scroll-x clipped-new-scroll-x)))
 
-;TODO: see concern for autoscroll-x-context
-;TODO: actually use this when jumping playhead around
 (defn autoscroll-x-playhead [old-timeline new-timeline]
   (let [; see above but use a different policy
         new-scroll-x (:scroll-x new-timeline)]
     (assoc new-timeline :scroll-x new-scroll-x)))
 
+(defn jump-to-frame! [frame]
+  (println "jump to " frame)
+  (swap! app-state update-in [:timeline]
+         (fn [old-timeline]
+           (autoscroll-x-playhead old-timeline
+                                  (assoc old-timeline
+                                    :now (clip 0 frame (:duration @app-state)))))))
+
 (defonce -context-scroller nil)
 (declare start-scrolling-context!)
 (declare stop-scrolling-context!)
+(defonce -scroll-focus-frame 0)
+(def context-animation-duration 10)
 (defn -context-scroller-fn [_now]
   (let [ctx (get-in @app-state [:timeline :context])
         tgt (get-in @app-state [:timeline :target-context])
         src (get-in @app-state [:timeline :source-context])
+        scroll-focus-frame -scroll-focus-frame
         remaining (abs (- tgt ctx))
         ;todo:something smart with _now, dt stuff
         ;ratio (- 1 (/ remaining (abs (- tgt src))))
-        vel (/ (- tgt src) 15)]                             ; take approx 15 frames to get there
+        vel (/ (- tgt src) context-animation-duration)]     ; take approx 15 frames to get there
     (if (<= remaining (abs vel))
       (do
         (swap! app-state update-in [:timeline]
-               (fn [old] (autoscroll-x-context old (assoc old :context tgt))))
+               (fn [old]
+                 (println "swapping to" (:scroll-x (autoscroll-x-context old (assoc old :context tgt) scroll-focus-frame)))
+                 (autoscroll-x-context old (assoc old :context tgt) scroll-focus-frame)))
         (stop-scrolling-context!))
       (do
         (swap! app-state update-in [:timeline]
-               (fn [old] (autoscroll-x-context old (assoc old :context (+ ctx vel)))))
+               (fn [old]
+                 (println "swapping to" (:scroll-x (autoscroll-x-context old (assoc old :context (+ ctx vel)) scroll-focus-frame)))
+                 (autoscroll-x-context old (assoc old :context (+ ctx vel)) scroll-focus-frame)))
         (start-scrolling-context!)))))
 
 (defn stop-scrolling-context! []
@@ -228,16 +255,15 @@
 (defn clip-context [ctx scroll-width duration]
   (clip (max-tick-count scroll-width) ctx duration))
 
-(defn change-context! [ctx]
+(defn change-context! [ctx scroll-focus-frame]
   (println "change context" ctx)
   (let [target (clip-context ctx (:scroll-width (:timeline @app-state)) (:duration @app-state))]
+    (set! -scroll-focus-frame scroll-focus-frame)
     (swap! app-state update-in [:timeline]
            (fn [old]
              (merge old {:target-context target
                          :source-context (:context old)})))
-    (start-scrolling-context!))
-  ;jump scroll-x
-  )
+    (start-scrolling-context!)))
 
 ; Do this goofy declare/remove/define/add dance to make sure we don't put two
 ; event handlers on the document.
@@ -248,7 +274,7 @@
   (let [now (:now (:timeline @app-state))
         context (:context (:timeline @app-state))
         duration (:duration @app-state)
-        ;left-x (get-in @app-state [:timeline :scroll-x])
+        scroll-x (get-in @app-state [:timeline :scroll-x])
         scroll-width (:scroll-width (:timeline @app-state))
         shown-ticks (shown-tick-frames scroll-width
                                        context
@@ -262,15 +288,22 @@
         frame-skip (current-skip-level scroll-width context)
         nearest-skip-down (prev-item frame-skip skip-levels)
         nearest-skip-up (next-item frame-skip skip-levels)
-
+        focused-frame (if (frame-visible? now scroll-x scroll-width context)
+                        now
+                        (inv-frame-offset-x (+ scroll-x (/ scroll-width 2))
+                                            scroll-width
+                                            context
+                                            duration))
         shift (.-shiftKey e)]
     (case (.-keyCode e)
       38 (change-context! (if shift                         ; up
                             (* nearest-skip-up max-ticks)
-                            (+ context context-step)))
+                            (+ context context-step))
+                          focused-frame)
       40 (change-context! (if shift                         ; down
                             (* nearest-skip-down max-ticks)
-                            (- context context-step)))
+                            (- context context-step))
+                          focused-frame)
       37 (jump-to-frame! (if shift                          ; left
                            nearest-tick-left
                            (dec now)))
@@ -293,6 +326,104 @@
                                  :top            0
                                  :pointer-events "none"}})))))
 
+(defn scroll-to! [x]
+  (let [scroll-width (:scroll-width (:timeline @app-state))
+        context (:context (:timeline @app-state))
+        duration (:duration @app-state)]
+    (swap! app-state update-in
+           [:timeline :scroll-x]
+           #(clip 0 x (+ 16 (- (* duration (/ scroll-width context)) scroll-width))))))
+
+(defn scroll-thumb-width [data]
+  (let [duration (get-in data [:duration])
+        scroll-width (get-in data [:timeline :scroll-width])
+        context (get-in data [:timeline :context])
+        total-width (* duration (/ scroll-width context))
+        visible-portion (/ scroll-width total-width)]
+    (max 32 (* scroll-width visible-portion))))
+
+(defn scroll-thumb-x [data]
+  (let [duration (get-in data [:duration])
+        scroll-width (get-in data [:timeline :scroll-width])
+        context (get-in data [:timeline :context])
+        total-width (* duration (/ scroll-width context))
+        scroll-x (get-in data [:timeline :scroll-x])
+        thumb-width (scroll-thumb-width data)]
+    (min (- scroll-width thumb-width)
+         (* scroll-width (/ scroll-x total-width)))))
+
+(defn scroll-bar-bg-on-click! [owner e]
+  (let [px (.-pageX e)
+        data (om/get-props owner)
+        thumb-x (scroll-thumb-x data)
+        tl-cur (:timeline (om/get-props owner))]
+    (if (<= px thumb-x)
+      (scroll-to! (- (get-in tl-cur [:scroll-x])
+                     (get-in tl-cur [:scroll-width])))
+      (scroll-to! (+ (get-in tl-cur [:scroll-x])
+                     (get-in tl-cur [:scroll-width]))))))
+
+(defn scroll-bar [data owner]
+  (reify
+    om/IRender
+    (render [_]
+      (let [thumb-width (scroll-thumb-width data)
+            thumb-x (scroll-thumb-x data)]
+        (dom/div (clj->js {:style   {:position        "fixed"
+                                     :bottom          0
+                                     :left            0
+                                     :width           "100%"
+                                     :height          16
+                                     :backgroundColor "lightgray"}
+                           ; click to jump thumb and change scrollx
+                           :onClick (partial scroll-bar-bg-on-click! owner)})
+                 (dom/div (clj->js {:style {:position        "fixed"
+                                            :width           thumb-width
+                                            :height          16
+                                            :left            thumb-x
+                                            :bottom          0
+                                            :backgroundColor "darkgray"
+                                            :borderRadius    16}
+                                    ; drag to move thumb and change scrollx
+
+                                    })))))))
+
+(defn timeline-on-wheel! [owner e]
+  (let [dx (.-deltaX e)
+        dy (.-deltaY e)
+        data (om/get-props owner)
+        scroll-x (:scroll-x (:timeline data))
+        scroll-width (:scroll-width (:timeline data))
+        context (:context (:timeline data))
+        duration (:duration data)
+        mouse-frame (inv-frame-offset-x (+ scroll-x (/ scroll-width 2)) scroll-width context duration)]
+    (cond
+      (and (not= 0 dy) (< (abs dx) 2))
+      (do
+        (om/transact! (:timeline data)
+                      []
+                      (fn [{ctx :context :as timeline}]
+                        (let [new-ctx (clip-context (floor (+ ctx dy))
+                                                    scroll-width
+                                                    duration)]
+                          (autoscroll-x-context timeline
+                                                (assoc timeline
+                                                  :context new-ctx
+                                                  :source-context new-ctx
+                                                  :target-context new-ctx)
+                                                mouse-frame)))))
+      true (scroll-to! (+ scroll-x dx)))))
+
+(defn timeline-on-click! [owner e]
+  (let [scroll-box (om/get-node owner)
+        data (om/get-props owner)
+        mx (page-x->element-x (.-pageX e) scroll-box)
+        mx (- mx 8)
+        scroll-width (:scroll-width (:timeline data))
+        ctx (:context (:timeline data))
+        dur (:duration data)]
+    (jump-to-frame! (inv-frame-offset-x mx scroll-width ctx dur))))
+
 (defn timeline [data owner {h :height y :y}]
   (reify
     om/IDidMount
@@ -302,6 +433,7 @@
                     (fn [_] (.-scrollLeft (om/get-node owner)))))
     om/IDidUpdate
     (did-update [_ _ _]
+      (println "did update" (get-in data [:timeline :scroll-x]))
       (set! (.-scrollLeft (om/get-node owner)) (get-in data [:timeline :scroll-x])))
     om/IRender
     (render [_]
@@ -310,32 +442,15 @@
             now (get-in data [:timeline :now])
             duration (get-in data [:duration])
             w (get-in data [:timeline :scroll-width])]
+        (println "am rendering" scroll-x)
         (dom/div
-          (clj->js {:style    {:overflow-x "scroll"
-                               :position   :absolute
-                               :left       0
-                               :top        (str y "px")
-                               :width      (str w "px")
-                               :height     (str h "px")}
-                    :onWheel  (fn [e]
-                                (let [dx (.-deltaX e)
-                                      dy (.-deltaY e)]
-                                  (when (and (not= 0 dy) (= (abs dx) 0))
-                                    (do
-                                      (om/transact! (:timeline data)
-                                                    []
-                                                    (fn [{ctx :context :as timeline}]
-                                                      (let [new-ctx (clip-context (floor (+ ctx dy))
-                                                                                  (:scroll-width (:timeline @app-state))
-                                                                                  (:duration @app-state))]
-                                                        (autoscroll-x-context timeline (assoc timeline
-                                                                                         :context new-ctx
-                                                                                         :source-context new-ctx
-                                                                                         :target-context new-ctx)))))))))
-                    :onScroll (fn [_e]
-                                (om/transact! (:timeline data)
-                                              [:scroll-x]
-                                              (fn [_] (.-scrollLeft (om/get-node owner)))))})
+          (clj->js {:style   {:overflow-x "hidden"
+                              :position   :absolute
+                              :left       0
+                              :top        (str y "px")
+                              :width      (str w "px")
+                              :height     (str h "px")}
+                    :onWheel (partial timeline-on-wheel! owner)})
           (dom/div (clj->js {:style   {:backgroundColor     "rgb(50,50,200)"
                                        :border              "16px solid green"
                                        :border-left-width   "8px"
@@ -343,15 +458,7 @@
                                        :border-bottom-width "0px"
                                        :width               (str (* (/ w context) duration) "px")
                                        :height              (str (- h 31) "px")}
-                             :onClick (fn [e]
-                                        (let [mx (.-pageX e)
-                                              scroll-box (om/get-node owner)
-                                              ol (.-scrollLeft scroll-box)
-                                              mx (+ mx ol)
-                                              mx (- mx 8)
-                                              ctx (:context @(:timeline data))
-                                              dur (:duration data)]
-                                          (jump-to-frame! (inv-frame-offset-x mx w ctx dur))))}))
+                             :onClick (partial timeline-on-click! owner)}))
           (apply dom/div nil (om/build-all tick-mark
                                            (map (fn [f] {:frame f :context context})
                                                 (shown-tick-frames w
@@ -366,21 +473,21 @@
                                      :position       :absolute
                                      :pointer-events "none"
                                      :left           (+ 1 (frame-offset-x now w context))
-                                     :top            0}})))))))
+                                     :top            0}}))
+          (om/build scroll-bar data)
+          )))))
 
-(def app-state (atom {:source       (frame-image-provider)
-                      :metadata     {}
-                      :timeline     {:context  900
-                                     :source-context 900
-                                     :target-context 900
-                                     :scroll-x 0
-                                     :source-scroll-x 0
-                                     :target-scroll-x 0
-                                     :now 0
-                                     :scroll-width 800}
-                      :annotations  []
-                      :edits        []
-                      :duration     2000}))
+(def app-state (atom {:source      (frame-image-provider)
+                      :metadata    {}
+                      :timeline    {:context        900
+                                    :source-context 900
+                                    :target-context 900
+                                    :scroll-x       0
+                                    :now            0
+                                    :scroll-width   800}
+                      :annotations []
+                      :edits       []
+                      :duration    2000}))
 
 (om/root
   (fn [data _owner]
