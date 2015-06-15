@@ -196,26 +196,45 @@
         new-focus-x (frame-offset-x focus-frame scroll-width context)
         ; scroll to put that new x value at the same offset from the left hand side as before
         new-scroll-x (- new-focus-x offset)
+        total-width (* (/ scroll-width context) duration)
         clipped-new-scroll-x (clip 0
                                    new-scroll-x
-                                   (- (* (/ scroll-width context) duration) scroll-width))]
-    (println "Old offset" offset "New offset" (- new-focus-x clipped-new-scroll-x))
-    (println "Old x" focus-x "new x" new-focus-x "old scroll" (:scroll-x old-timeline) "new scroll" clipped-new-scroll-x)
+                                   (- total-width scroll-width))]
     (assoc new-timeline
       :scroll-x clipped-new-scroll-x)))
 
-(defn autoscroll-x-playhead [old-timeline new-timeline]
-  (let [; see above but use a different policy
-        new-scroll-x (:scroll-x new-timeline)]
-    (assoc new-timeline :scroll-x new-scroll-x)))
+(defn autoscroll-x-playhead [_old-timeline new-timeline]
+  (let [duration (:duration @app-state)
+        left-buffer 64                                      ;px
+        right-buffer 96                                     ;px
+        ;is it left of scroll-x+buffer? or: is it right of scroll-x+scroll-width - buffer?
+        scroll-width (:scroll-width new-timeline)
+        context (:context new-timeline)
+        now-x (frame-offset-x (:now new-timeline) scroll-width context)
+        new-scroll-x (:scroll-x new-timeline)
+        left-edge (+ new-scroll-x left-buffer)
+        right-edge (- (+ new-scroll-x scroll-width) right-buffer)
+        new-scroll-x (cond
+                       (< now-x left-edge) (- now-x left-buffer)
+                       (> now-x right-edge) (+ (- now-x scroll-width) right-buffer)
+                       true new-scroll-x)
+        total-width (+ (* (/ scroll-width context) duration) 16)
+        clipped-new-scroll-x (clip 0
+                                   new-scroll-x
+                                   (- total-width scroll-width))]
+    (assoc new-timeline
+      :scroll-x clipped-new-scroll-x)))
 
-(defn jump-to-frame! [frame]
+(defn jump-to-frame! [frame autoscroll?]
   (println "jump to" frame)
   (om/transact! (om/root-cursor app-state) [:timeline]
                 (fn [old-timeline]
-                  (autoscroll-x-playhead old-timeline
-                                         (assoc old-timeline
-                                           :now (clip 0 frame (:duration @app-state)))))))
+                  (let [new-timeline (assoc old-timeline
+                                       :now (clip 0 frame (:duration @app-state)))]
+                    (if autoscroll?
+                      (autoscroll-x-playhead old-timeline
+                                             new-timeline)
+                      new-timeline)))))
 
 (defonce -context-scroller nil)
 (declare start-scrolling-context!)
@@ -306,10 +325,12 @@
                           focused-frame)
       37 (jump-to-frame! (if shift                          ; left
                            nearest-tick-left
-                           (dec now)))
+                           (dec now))
+                         true)
       39 (jump-to-frame! (if shift                          ; right
                            nearest-tick-right
-                           (inc now)))
+                           (inc now))
+                         true)
       true)
     (.preventDefault e)))
 (.addEventListener js/document "keydown" handle-keyboard!)
@@ -506,7 +527,7 @@
         scroll-width (:scroll-width (:timeline data))
         ctx (:context (:timeline data))
         dur (:duration data)]
-    (jump-to-frame! (inv-frame-offset-x mx scroll-width ctx dur))))
+    (jump-to-frame! (inv-frame-offset-x mx scroll-width ctx dur) false)))
 
 (defn timeline [data owner {h :height y :y}]
   (reify
