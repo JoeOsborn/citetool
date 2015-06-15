@@ -212,10 +212,10 @@
 (defn jump-to-frame! [frame]
   (println "jump to" frame)
   (om/transact! (om/root-cursor app-state) [:timeline]
-              (fn [old-timeline]
-                (autoscroll-x-playhead old-timeline
-                                       (assoc old-timeline
-                                         :now (clip 0 frame (:duration @app-state)))))))
+                (fn [old-timeline]
+                  (autoscroll-x-playhead old-timeline
+                                         (assoc old-timeline
+                                           :now (clip 0 frame (:duration @app-state)))))))
 
 (defonce -context-scroller nil)
 (declare start-scrolling-context!)
@@ -234,15 +234,15 @@
     (if (<= remaining (abs vel))
       (do
         (om/transact! (om/root-cursor app-state) [:timeline]
-                    (fn [old]
-                      (println "swapping to" (:scroll-x (autoscroll-x-context old (assoc old :context tgt) scroll-focus-frame)))
-                      (autoscroll-x-context old (assoc old :context tgt) scroll-focus-frame)))
+                      (fn [old]
+                        (println "swapping to" (:scroll-x (autoscroll-x-context old (assoc old :context tgt) scroll-focus-frame)))
+                        (autoscroll-x-context old (assoc old :context tgt) scroll-focus-frame)))
         (stop-scrolling-context!))
       (do
         (om/transact! (om/root-cursor app-state) [:timeline]
-                    (fn [old]
-                      (println "swapping to" (:scroll-x (autoscroll-x-context old (assoc old :context (+ ctx vel)) scroll-focus-frame)))
-                      (autoscroll-x-context old (assoc old :context (+ ctx vel)) scroll-focus-frame)))
+                      (fn [old]
+                        (println "swapping to" (:scroll-x (autoscroll-x-context old (assoc old :context (+ ctx vel)) scroll-focus-frame)))
+                        (autoscroll-x-context old (assoc old :context (+ ctx vel)) scroll-focus-frame)))
         (start-scrolling-context!)))))
 
 (defn stop-scrolling-context! []
@@ -260,9 +260,9 @@
   (let [target (clip-context ctx (:scroll-width (:timeline @app-state)) (:duration @app-state))]
     (set! -scroll-focus-frame scroll-focus-frame)
     (om/transact! (om/root-cursor app-state) [:timeline]
-                (fn [old]
-                  (merge old {:target-context target
-                              :source-context (:context old)})))
+                  (fn [old]
+                    (merge old {:target-context target
+                                :source-context (:context old)})))
     (start-scrolling-context!)))
 
 ; Do this goofy declare/remove/define/add dance to make sure we don't put two
@@ -331,8 +331,8 @@
         context (:context (:timeline @app-state))
         duration (:duration @app-state)]
     (om/transact! (om/root-cursor app-state)
-                [:timeline :scroll-x]
-                #(clip 0 x (+ 16 (- (* duration (/ scroll-width context)) scroll-width))))))
+                  [:timeline :scroll-x]
+                  #(clip 0 x (+ 16 (- (* duration (/ scroll-width context)) scroll-width))))))
 
 (defn scroll-thumb-width [data]
   (let [duration (get-in data [:duration])
@@ -363,6 +363,88 @@
       (scroll-to! (+ (get-in tl-cur [:scroll-x])
                      (get-in tl-cur [:scroll-width]))))))
 
+(defn add-scroll-listeners! [move up]
+  (.addEventListener js/window "mousemove" move)
+  (.addEventListener js/window "mouseup" up))
+
+(defn remove-scroll-listeners! [move up]
+  (.removeEventListener js/window "mousemove" move)
+  (.removeEventListener js/window "mouseup" up))
+
+(defn scroll-thumb [data owner]
+  (reify
+    om/IInitState
+    (init-state [_]
+      {:down    (async/chan)
+       :up      (async/chan)
+       :move    (async/chan)
+       :unmount (async/chan)})
+    om/IDidMount
+    (did-mount [_]
+      ; drag to move thumb and change scrollx
+      (let [{down :down up :up move :move unmount :unmount} (om/get-state owner)
+            up-listener #(async/put! up [(.-pageX %) (.-pageY %)])
+            move-listener #(async/put! move [(.-pageX %) (.-pageY %)])]
+        ; little state machine.
+        ; A. looks for unmount (and closes chans) or for down.
+        ; B. if down, adds move and up event listeners to js/window and loops waiting for:
+        ;   B1a. unmount (close chans, eval to :unmount)
+        ;   B1b. move (change scroll-x and recur) or
+        ;   B1c. up (change scroll-x, eval to :up)
+        ;   B2. then it removes those listeners and
+        ;   B3. if the result was not :unmount it recurs back to (A).
+        (async-m/go-loop []
+                         (async-m/alt!
+                           unmount :unmount
+                           down
+                           ([[start-x _y]]
+                             (do
+                               (add-scroll-listeners! move-listener up-listener)
+                               (let [props (om/get-props owner)
+                                     start-scroll-x (get-in props [:timeline :scroll-x])
+                                     scroll-width (get-in props [:timeline :scroll-width])
+                                     duration (get-in props [:duration])
+                                     context (get-in props [:timeline :context])
+                                     total-width (* duration (/ scroll-width context))
+                                     scaled-to-duration (fn [dx]
+                                                          (* (/ dx scroll-width) total-width))
+                                     do-scroll! (fn [x] (scroll-to! (+ start-scroll-x
+                                                                       (scaled-to-duration (- x start-x)))))
+                                     loop-result
+                                     (loop []
+                                       (async-m/alt!
+                                         unmount :unmount
+                                         move ([[x _y]]
+                                                (do-scroll! x)
+                                                (recur))
+                                         up ([[x _y]]
+                                              (do-scroll! x)
+                                              :up)))]
+                                 (remove-scroll-listeners! move-listener up-listener)
+                                 (when-not (= loop-result :unmount)
+                                   (recur)))))))))
+    om/IWillUnmount
+    (will-unmount [_]
+      (let [{down :down up :up move :move unmount :unmount} (om/get-state owner)]
+        (async/put! unmount :unmount)
+        (doseq [c [down up move unmount]] (async/close! c))))
+    om/IRender
+    (render [_]
+      (let [thumb-width (scroll-thumb-width data)
+            thumb-x (scroll-thumb-x data)
+            down-c (:down (om/get-state owner))]
+        (dom/div (clj->js {:style       {:position        "fixed"
+                                         :width           thumb-width
+                                         :height          16
+                                         :left            thumb-x
+                                         :bottom          0
+                                         :backgroundColor "darkgray"
+                                         :borderRadius    16}
+                           :onMouseDown #(do                ; must return true to avoid a React warning
+                                          (when (= (.-button %) 0)
+                                            (async/put! down-c [(.-pageX %) (.-pageY %)]))
+                                          true)}))))))
+
 (defn scroll-bar [data owner]
   (reify
     om/IRender
@@ -377,16 +459,7 @@
                                      :backgroundColor "lightgray"}
                            ; click to jump thumb and change scrollx
                            :onClick (partial scroll-bar-bg-on-click! owner)})
-                 (dom/div (clj->js {:style {:position        "fixed"
-                                            :width           thumb-width
-                                            :height          16
-                                            :left            thumb-x
-                                            :bottom          0
-                                            :backgroundColor "darkgray"
-                                            :borderRadius    16}
-                                    ; drag to move thumb and change scrollx
-
-                                    })))))))
+                 (om/build scroll-thumb data))))))
 
 (defn timeline-on-wheel! [owner e]
   (let [dx (.-deltaX e)
