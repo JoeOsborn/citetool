@@ -83,15 +83,23 @@
 
 (defn frame-image-provider []
   (let [requests (async/chan)
-        responses (async/chan)]
+        responses (async/chan)
+        fake-ms-per-frame 1]
     (async-m/go-loop
-      []
+      [last-frame 0]
       (let [request (async/<! requests)]
-        (async/<! (async/timeout 500))
         (if-let [{frame :frame} request]
-          (async/>! responses {:frame frame, :image-data (frame-image-data frame)})
-          (println "Unrecognized request " request))
-        (recur)))
+          (do
+            (async/<! (async/timeout (if (>= frame last-frame)
+                                       ;simulate running from last-frame to frame
+                                       (* fake-ms-per-frame (- frame last-frame))
+                                       ;otherwise simulate running from 0
+                                       (* fake-ms-per-frame frame))))
+            (async/>! responses {:frame frame, :image-data (frame-image-data frame)})
+            (recur frame))
+          (do
+            (println "Unrecognized request " request)
+            (recur last-frame)))))
     {:out (async/pub responses :frame) :in requests}))
 
 (defonce
@@ -533,12 +541,9 @@
   (reify
     om/IDidMount
     (did-mount [_]
-      (om/transact! (:timeline data)
-                    [:scroll-x]
-                    (fn [_] (.-scrollLeft (om/get-node owner)))))
+      (scroll-to! (.-scrollLeft (om/get-node owner))))
     om/IDidUpdate
     (did-update [_ _ _]
-      (println "did update" (get-in data [:timeline :scroll-x]))
       (set! (.-scrollLeft (om/get-node owner)) (get-in data [:timeline :scroll-x])))
     om/IRender
     (render [_]
@@ -546,8 +551,12 @@
             scroll-x (get-in data [:timeline :scroll-x])
             now (get-in data [:timeline :now])
             duration (get-in data [:duration])
-            w (get-in data [:timeline :scroll-width])]
-        (println "am rendering" scroll-x)
+            w (get-in data [:timeline :scroll-width])
+            tick-frames (shown-tick-frames w
+                                           context
+                                           scroll-x
+                                           (+ scroll-x w)
+                                           duration)]
         (dom/div
           (clj->js {:style   {:overflow-x "hidden"
                               :position   :absolute
@@ -566,11 +575,7 @@
                              :onClick (partial timeline-on-click! owner)}))
           (apply dom/div nil (om/build-all tick-mark
                                            (map (fn [f] {:frame f :context context})
-                                                (shown-tick-frames w
-                                                                   context
-                                                                   scroll-x
-                                                                   (+ scroll-x w)
-                                                                   duration))
+                                                tick-frames)
                                            {:opts {:width w}}))
           (dom/div (clj->js {:style {:border         "4px solid red"
                                      :width          "4px"
