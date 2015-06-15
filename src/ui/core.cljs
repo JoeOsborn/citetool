@@ -383,8 +383,17 @@
     (did-mount [_]
       ; drag to move thumb and change scrollx
       (let [{down :down up :up move :move unmount :unmount} (om/get-state owner)
-            up-listener #(async/put! up [(.-pageX %) (.-pageY %)])
-            move-listener #(async/put! move [(.-pageX %) (.-pageY %)])]
+            up-listener #(do
+                          (when (= (.-button %) 0)
+                            (.preventDefault %)
+                            (.stopPropagation %)
+                            (async/put! up [(.-pageX %) (.-pageY %)]))
+                          true)
+            move-listener #(do
+                            (.preventDefault %)
+                            (.stopPropagation %)
+                            (async/put! move [(.-pageX %) (.-pageY %)])
+                            true)]
         ; little state machine.
         ; A. looks for unmount (and closes chans) or for down.
         ; B. if down, adds move and up event listeners to js/window and loops waiting for:
@@ -442,6 +451,8 @@
                                          :borderRadius    16}
                            :onMouseDown #(do                ; must return true to avoid a React warning
                                           (when (= (.-button %) 0)
+                                            (.preventDefault %)
+                                            (.stopPropagation %)
                                             (async/put! down-c [(.-pageX %) (.-pageY %)]))
                                           true)}))))))
 
