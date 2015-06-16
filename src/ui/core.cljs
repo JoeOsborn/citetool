@@ -50,7 +50,12 @@
     s
     (recur (str filler s) filler min-len)))
 
-(defn frame->timecode [frame pad-units]
+; max-time determines how unit padding happens.
+; if it's <0, units will always be padded out to hours.
+; if it's 0, units will never be padded.
+; otherwise, units will be padded so that all timecodes
+; have the same number of units as max-time.
+(defn frame->timecode [frame max-time]
   (let [h (floor (/ frame 108000))
         frame (- frame (* h 108000))
         m (floor (/ frame 1800))
@@ -58,10 +63,17 @@
         s (floor (/ frame 30))
         frame (- frame (* s 30))
         ; frame to millisecond = (seconds/frame) * frame * (milliseconds/second)
-        millis (floor (* (/ 1 30) frame 1000))]
-    (str (if (or pad-units (> h 0)) (str (pad-left (str h) "0" 2) ":") "")
-         (if (or pad-units (> m 0) (> h 0)) (str (pad-left (str m) "0" 2) ":") "")
-         (if (or pad-units (> s 0) (> m 0) (> h 0)) (str (pad-left (str s) "0" 2) ".") "")
+        millis (floor (* (/ 1 30) frame 1000))
+
+        max-time (if (< max-time 0) Infinity max-time)
+        max-h (floor (/ max-time 108000))
+        max-time (- max-time (* h 108000))
+        max-m (floor (/ max-time 1800))
+        max-time (- max-time (* m 1800))
+        max-s (floor (/ max-time 30))]
+    (str (if (> max-h 0) (str (pad-left (str h) "0" 2) ":") "")
+         (if (or (> max-m 0) (> max-h 0)) (str (pad-left (str m) "0" 2) ":") "")
+         (if (or (> max-s 0) (> max-m 0) (> max-h 0)) (str (pad-left (str s) "0" 2) ".") "")
          (pad-right (str millis) "0" 3))))
 
 (defn frame-image-data [frame]
@@ -78,7 +90,7 @@
       (println "frame:" (str frame))
       (set! (.-font ctx) (str f "px serif"))
       (.fillText ctx (str "fm " frame) (/ w 2) (+ (/ h 4) (/ f 4)) w)
-      (.fillText ctx (str (frame->timecode frame true)) (/ w 2) (+ (* 3 (/ h 4)) (/ f 4)) w)
+      (.fillText ctx (str (frame->timecode frame (:duration @app-state))) (/ w 2) (+ (* 3 (/ h 4)) (/ f 4)) w)
       (.toDataURL offscreen-canvas))))
 
 (defn frame-image-provider []
@@ -129,7 +141,7 @@
         (async/close! receipt)
         ))))
 
-(defn async-image [data owner]
+(defn async-image [data owner opts]
   (reify
     om/IWillMount
     (will-mount [_]
@@ -143,8 +155,8 @@
         (-update-async-image new-props owner)))
     om/IRenderState
     (render-state [_ {image-data :image-data}]
-      (dom/img (clj->js {:src   image-data :width 640 :height 480
-                         :style {:margin-left 80}})))))
+      (dom/img (clj->js (merge {:src image-data :width (:width data) :height (:height data)}
+                               opts))))))
 
 
 (defn frame-offset-x [frame scroll-width context]
@@ -188,6 +200,12 @@
 
 (defn abs [a] (.abs js/Math a))
 
+(defn clip-scroll [x scroll-width context duration]
+  (clip 0 x (+ 16 (- (* duration (/ scroll-width context)) scroll-width))))
+
+(defn clip-context [ctx scroll-width duration]
+  (clip (max-tick-count scroll-width) ctx duration))
+
 (defn autoscroll-x-context [old-timeline new-timeline focus-frame]
   (let [duration (:duration @app-state)
         ; using old-timeline:
@@ -204,10 +222,7 @@
         new-focus-x (frame-offset-x focus-frame scroll-width context)
         ; scroll to put that new x value at the same offset from the left hand side as before
         new-scroll-x (- new-focus-x offset)
-        total-width (* (/ scroll-width context) duration)
-        clipped-new-scroll-x (clip 0
-                                   new-scroll-x
-                                   (- total-width scroll-width))]
+        clipped-new-scroll-x (clip-scroll new-scroll-x scroll-width context duration)]
     (assoc new-timeline
       :scroll-x clipped-new-scroll-x)))
 
@@ -226,10 +241,7 @@
                        (< now-x left-edge) (- now-x left-buffer)
                        (> now-x right-edge) (+ (- now-x scroll-width) right-buffer)
                        true new-scroll-x)
-        total-width (+ (* (/ scroll-width context) duration) 16)
-        clipped-new-scroll-x (clip 0
-                                   new-scroll-x
-                                   (- total-width scroll-width))]
+        clipped-new-scroll-x (clip-scroll new-scroll-x scroll-width context duration)]
     (assoc new-timeline
       :scroll-x clipped-new-scroll-x)))
 
@@ -262,13 +274,11 @@
       (do
         (om/transact! (om/root-cursor app-state) [:timeline]
                       (fn [old]
-                        (println "swapping to" (:scroll-x (autoscroll-x-context old (assoc old :context tgt) scroll-focus-frame)))
                         (autoscroll-x-context old (assoc old :context tgt) scroll-focus-frame)))
         (stop-scrolling-context!))
       (do
         (om/transact! (om/root-cursor app-state) [:timeline]
                       (fn [old]
-                        (println "swapping to" (:scroll-x (autoscroll-x-context old (assoc old :context (+ ctx vel)) scroll-focus-frame)))
                         (autoscroll-x-context old (assoc old :context (+ ctx vel)) scroll-focus-frame)))
         (start-scrolling-context!)))))
 
@@ -278,10 +288,8 @@
   (stop-scrolling-context!)
   (set! -context-scroller (.requestAnimationFrame js/window -context-scroller-fn)))
 
-
-(defn clip-context [ctx scroll-width duration]
-  (clip (max-tick-count scroll-width) ctx duration))
-
+; Do this goofy declare/remove/define/add dance to make sure we don't put two
+; event handlers on the document.
 (defn change-context! [ctx scroll-focus-frame]
   (println "change context" ctx)
   (let [target (clip-context ctx (:scroll-width (:timeline @app-state)) (:duration @app-state))]
@@ -291,9 +299,6 @@
                     (merge old {:target-context target
                                 :source-context (:context old)})))
     (start-scrolling-context!)))
-
-; Do this goofy declare/remove/define/add dance to make sure we don't put two
-; event handlers on the document.
 (declare handle-keyboard!)
 (.removeEventListener js/document "keydown" handle-keyboard!)
 (defn handle-keyboard! [e]
@@ -341,19 +346,8 @@
                          true)
       true)
     (.preventDefault e)))
-(.addEventListener js/document "keydown" handle-keyboard!)
 
-(defn tick-mark [data _owner {w :width}]
-  (reify
-    om/IRender
-    (render [_]
-      (dom/div (clj->js {:style {:border         "1px solid grey"
-                                 :width          "0px"
-                                 :height         "96%"
-                                 :position       :absolute
-                                 :left           (+ 6 (frame-offset-x (:frame data) w (:context data)))
-                                 :top            0
-                                 :pointer-events "none"}})))))
+(.addEventListener js/document "keydown" handle-keyboard!)
 
 (defn scroll-to! [x]
   (let [scroll-width (:scroll-width (:timeline @app-state))
@@ -361,7 +355,7 @@
         duration (:duration @app-state)]
     (om/transact! (om/root-cursor app-state)
                   [:timeline :scroll-x]
-                  #(clip 0 x (+ 16 (- (* duration (/ scroll-width context)) scroll-width))))))
+                  #(clip-scroll x scroll-width context duration))))
 
 (defn scroll-thumb-width [data]
   (let [duration (get-in data [:duration])
@@ -537,6 +531,68 @@
         dur (:duration data)]
     (jump-to-frame! (inv-frame-offset-x mx scroll-width ctx dur) false)))
 
+(defn tick-mark [data _owner {w :width h :height}]
+  (reify
+    om/IRender
+    (render [_]
+      (dom/div (clj->js {:style {:border          "1px solid black"
+                                 :width           "1px"
+                                 :backgroundColor "white"
+                                 :height          "96%"
+                                 :position        :absolute
+                                 :left            (+ 6 (frame-offset-x (:frame data) w (:context data)))
+                                 :top             0
+                                 :pointer-events  "none"}})))))
+
+(defn tick-mark-label [data _owner {w :width}]
+  (reify
+    om/IRender
+    (render [_]
+      (let [frame (:frame data)
+            duration (:duration data)
+            frame-x (frame-offset-x frame w (:context data))
+            label-text (frame->timecode frame duration)
+            label-width (* 5 tick-proximity-max)
+            font-size 14
+            is-last (= frame (dec duration))]
+        (dom/p (clj->js {:style (merge
+                                  {:position       :absolute
+                                   :top            0
+                                   :color          "lightgray"
+                                   :font-size      (str font-size "px")
+                                   :pointer-events "none"}
+                                  (if is-last
+                                    {:right 8}
+                                    {:left (+ frame-x 10)}))})
+               label-text)))))
+
+(defn multiples [n]
+  (map #(* % n) (range 1 Infinity)))
+
+(defn pixels->frames [px scroll-width context]
+  (let [framesperpx (/ context scroll-width)]
+    (* px framesperpx)))
+
+(defn frames->pixels [f scroll-width context]
+  (let [pxperframe (/ scroll-width context)]
+    (* f pxperframe)))
+
+(defn timecode-label-width [label-str]
+  (let [len (.-length label-str)]
+    (* len 8)))
+
+(defn findp [pred coll]
+  (let [[result-code idx]
+        (reduce (fn [[code idx] item]
+                  (if (pred item)
+                    (reduced [:found idx])
+                    [code (inc idx)]))
+                [:not-found 0]
+                coll)]
+    (if (= result-code :found)
+      idx
+      :not-found)))
+
 (defn timeline [data owner {h :height y :y}]
   (reify
     om/IDidMount
@@ -544,7 +600,8 @@
       (scroll-to! (.-scrollLeft (om/get-node owner))))
     om/IDidUpdate
     (did-update [_ _ _]
-      (set! (.-scrollLeft (om/get-node owner)) (get-in data [:timeline :scroll-x])))
+      ;(precache! (get-in (om/get-props owner) [:source]) min max step)
+      (set! (.-scrollLeft (om/get-node owner)) (get-in (om/get-props owner) [:timeline :scroll-x])))
     om/IRender
     (render [_]
       (let [context (get-in data [:timeline :context])
@@ -552,63 +609,98 @@
             now (get-in data [:timeline :now])
             duration (get-in data [:duration])
             w (get-in data [:timeline :scroll-width])
+            frame-resolution (current-skip-level w context)
+            max-label-width (timecode-label-width (frame->timecode duration duration))
+            timecode-width-in-frames (pixels->frames max-label-width w context)
+            tick-label-resolution (first (filter #(>= % timecode-width-in-frames)
+                                                 (multiples frame-resolution)))
+            ;preview-image-width (pixels->frames (* (/ 4 3) h) ...)
+            ;preview-image-resolution (least multiple of frame-resolution >= p-i-w)
             tick-frames (shown-tick-frames w
                                            context
-                                           scroll-x
-                                           (+ scroll-x w)
-                                           duration)]
+                                           (- scroll-x (/ w 4))
+                                           (+ scroll-x w (/ w 2))
+                                           duration)
+            tick-mark-data (vec (map (fn [f]
+                                       (let [base {:frame f :context context}
+                                             special (if (= (mod f tick-label-resolution) 0)
+                                                       {:label true :duration duration}
+                                                       {})]
+                                         (merge base special)))
+                                     tick-frames))
+            final-frame (dec duration)
+            has-final-frame (= (last tick-frames) final-frame)
+            last-label-safe-frame (- final-frame (* 2 timecode-width-in-frames))
+            tick-mark-data (if has-final-frame
+                             (map #(cond
+                                    (= (:frame %) final-frame) (assoc % :label true :duration duration)
+                                    (>= (:frame %) last-label-safe-frame) (dissoc % :label)
+                                    true %)
+                                  tick-mark-data)
+                             tick-mark-data)
+            tick-opts {:opts {:width w :height h}}]
         (dom/div
           (clj->js {:style   {:overflow-x "hidden"
+                              :overflow-y "none"
                               :position   :absolute
                               :left       0
                               :top        (str y "px")
                               :width      (str w "px")
                               :height     (str h "px")}
                     :onWheel (partial timeline-on-wheel! owner)})
-          (dom/div (clj->js {:style   {:backgroundColor     "rgb(50,50,200)"
-                                       :border              "16px solid green"
-                                       :border-left-width   "8px"
-                                       :border-right-width  "8px"
-                                       :border-bottom-width "0px"
-                                       :width               (str (* (/ w context) duration) "px")
-                                       :height              (str (- h 31) "px")}
-                             :onClick (partial timeline-on-click! owner)}))
-          (apply dom/div nil (om/build-all tick-mark
-                                           (map (fn [f] {:frame f :context context})
-                                                tick-frames)
-                                           {:opts {:width w}}))
-          (dom/div (clj->js {:style {:border         "4px solid red"
-                                     :width          "4px"
-                                     :height         "90%"
-                                     :position       :absolute
-                                     :pointer-events "none"
-                                     :left           (+ 1 (frame-offset-x now w context))
-                                     :top            0}}))
+          (dom/div (clj->js {:style   {:backgroundColor "rgb(50,50,200)"
+                                       :overflow-y      "none"
+                                       :position        "absolute"
+                                       :width           (str (+ (* (/ w context) duration) 16) "px")
+                                       :height          (str h "px")}
+                             :onClick (partial timeline-on-click! owner)})
+                   (dom/div (clj->js {:style {:border              "16px solid green"
+                                              :border-left-width   "8px"
+                                              :border-right-width  "8px"
+                                              :border-bottom-width "0px"
+                                              :left                8
+                                              :width               (str (* (/ w context) duration) "px")
+                                              :height              (- h 32)}}))
+                   (apply dom/div nil (om/build-all tick-mark tick-mark-data tick-opts))
+                   (dom/div (clj->js {:style {:border         "4px solid red"
+                                              :width          "4px"
+                                              :height         "90%"
+                                              :position       :absolute
+                                              :pointer-events "none"
+                                              :left           (+ 1 (frame-offset-x now w context))
+                                              :top            0}}))
+                   (apply dom/div nil (om/build-all tick-mark-label (filter #(:label %) tick-mark-data) tick-opts)))
           (om/build scroll-bar data)
           )))))
 
-(def app-state (atom {:source      (frame-image-provider)
-                      :metadata    {}
-                      :timeline    {:context        900
-                                    :source-context 900
-                                    :target-context 900
-                                    :scroll-x       0
-                                    :now            0
-                                    :scroll-width   800}
-                      :annotations []
-                      :edits       []
-                      :duration    2000}))
+(defonce app-state (atom {:source      (frame-image-provider)
+                          :metadata    {}
+                          :timeline    {:context        900
+                                        :source-context 900
+                                        :target-context 900
+                                        :scroll-x       0
+                                        :now            0
+                                        :scroll-width   800}
+                          :annotations []
+                          :edits       []
+                          :duration    2000}))
 
 (om/root
   (fn [data _owner]
     (reify om/IRender
       (render [_]
         (dom/div {}
-                 (om/build async-image {:now (get-in data [:timeline :now]) :source (:source data)})
+                 (om/build async-image
+                           {:now    (get-in data [:timeline :now])
+                            :source (:source data)
+                            :width  640
+                            :height 480}
+                           {:opts {:style {:margin-left 80}}})
                  (om/build timeline
                            {:timeline (:timeline data)
                             :edits    (:edits data)
-                            :duration (:duration data)}
+                            :duration (:duration data)
+                            :source   (:source data)}
                            {:opts {:height 100 :y 478}})))))
   app-state
   {:target (.getElementById js/document "app")})
