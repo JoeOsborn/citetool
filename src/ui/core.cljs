@@ -577,9 +577,9 @@
   (let [pxperframe (/ scroll-width context)]
     (* f pxperframe)))
 
-(defn timecode-label-width [label-str]
+(defn timecode-label-width [label-str font-size]
   (let [len (.-length label-str)]
-    (* len 8)))
+    (* len font-size)))
 
 (defn findp [pred coll]
   (let [[result-code idx]
@@ -592,6 +592,56 @@
     (if (= result-code :found)
       idx
       :not-found)))
+
+(defn playback-controls [data owner]
+  (reify
+    om/IRender
+    (render [_]
+      (let [scroll-width (get-in data [:timeline :scroll-width])
+            now (get-in data [:timeline :now])
+            duration (get-in data [:duration])
+            h 28
+            btn-width 28
+            tc-width (timecode-label-width (frame->timecode duration duration) 8)
+            w (+ tc-width (* 3 btn-width) 12)
+            btn-style {:backgroundColor "lightGray"
+                       :width           btn-width
+                       :height          h
+                       :fontSize        14
+                       :display         :inline-block
+                       :textAlign       :center
+                       :lineHeight      (str h "px")
+                       :borderLeft "1px solid black"
+                       :borderRight "1px solid black"}
+            tc-style (assoc btn-style
+                       :width tc-width
+                       :textAlign :center
+                       :paddingLeft "5px"
+                       :borderRight :none)]
+        (dom/div (clj->js {:style {:position        "fixed"
+                                   :bottom          "16px"
+                                   :left            (- (/ scroll-width 2) (/ w 2))
+                                   :width           w
+                                   :height          h
+                                   :backgroundColor "black"}})
+                 (dom/div (clj->js {:style btn-style})
+                          "bak")
+                 (dom/div (clj->js {:style btn-style})
+                          "p/p")
+                 (dom/div (clj->js {:style btn-style})
+                          "fwd")
+                 (dom/div (clj->js {:style tc-style})
+                          (frame->timecode now duration))
+                 (dom/div (clj->js {:style (assoc btn-style
+                                             :position :absolute
+                                             :left (- (* 3 btn-width) 1)
+                                             :top (/ h 4)
+                                             :width (/ btn-width 2)
+                                             :height (/ h 2)
+                                             :lineHeight (str (/ h 2) "px")
+                                             :fontSize 12
+                                             :border "1px solid black")})
+                          "lnk"))))))
 
 (defn timeline [data owner {h :height y :y}]
   (reify
@@ -610,7 +660,7 @@
             duration (get-in data [:duration])
             w (get-in data [:timeline :scroll-width])
             frame-resolution (current-skip-level w context)
-            max-label-width (timecode-label-width (frame->timecode duration duration))
+            max-label-width (timecode-label-width (frame->timecode duration duration) 8)
             timecode-width-in-frames (pixels->frames max-label-width w context)
             tick-label-resolution (first (filter #(>= % timecode-width-in-frames)
                                                  (multiples frame-resolution)))
@@ -670,6 +720,7 @@
                                               :left           (+ 1 (frame-offset-x now w context))
                                               :top            0}}))
                    (apply dom/div nil (om/build-all tick-mark-label (filter #(:label %) tick-mark-data) tick-opts)))
+          (om/build playback-controls data)
           (om/build scroll-bar data)
           )))))
 
@@ -689,7 +740,7 @@
   (fn [data _owner]
     (reify om/IRender
       (render [_]
-        (dom/div {}
+        (dom/div (clj->js {})
                  (om/build async-image
                            {:now    (get-in data [:timeline :now])
                             :source (:source data)
