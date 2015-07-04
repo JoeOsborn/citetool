@@ -283,7 +283,7 @@
       (let [frame (:frame data)
             duration (:duration data)
             pw (:preview-width data)
-            frame-x (u/frame-offset-x frame w (:context data))
+            frame-x (+ 6 (u/frame-offset-x frame w (:context data)))
             skip (:skip data)
             is-last (= frame (dec duration))]
         (when-not skip
