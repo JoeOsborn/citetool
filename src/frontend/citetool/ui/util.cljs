@@ -73,7 +73,6 @@
         frame (- frame (* s 30))
         ; frame to millisecond = (seconds/frame) * frame * (milliseconds/second)
         millis (floor (* (/ 1 30) frame 1000))
-
         max-time (if (< max-time 0) Infinity max-time)
         max-h (floor (/ max-time 108000))
         max-time (- max-time (* h 108000))
@@ -97,3 +96,15 @@
   (let [fx (frame-offset-x f scroll-width context)]
     (and (>= fx scroll-x) (<= fx (+ scroll-x scroll-width)))))
 
+
+(defn frame-skipped-frames [frame-skip visible-width context left-x right-x duration]
+  (let [left-frame (inv-frame-offset-x left-x visible-width context duration)
+        left-frame (- left-frame (mod left-frame frame-skip))
+        right-frame (inv-frame-offset-x right-x visible-width context duration)
+        right-frame (+ (- right-frame (mod right-frame frame-skip)) frame-skip)
+        last-frame (dec duration)
+        frames-maybe-missing-end (range left-frame (min right-frame last-frame) frame-skip)
+        frames (if (< right-frame last-frame)
+                 frames-maybe-missing-end
+                 (concat frames-maybe-missing-end [last-frame]))]
+    frames))

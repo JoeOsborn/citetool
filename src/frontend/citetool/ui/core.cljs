@@ -6,8 +6,8 @@
             [om.dom :as dom :include-macros true]
             [citetool.ui.util :as u]
             [citetool.ui.tc-frame-provider :as fip]
-            [citetool.ui.async-image :as async-image])
-  (:require-macros [cljs.core.async.macros :as async-m]))
+            [citetool.ui.async-image :as async-image]
+            [citetool.ui.scroll-bar :as scroll-bar]))
 
 (enable-console-print!)
 
@@ -21,6 +21,21 @@
 (defn on-js-reload []
   (om/transact! (om/root-cursor app-state) [:__figwheel_counter] inc))
 
+(defonce app-state (atom {:source      (fip/frame-image-provider 2000)
+                          :metadata    {}
+                          :timeline    {:context        900
+                                        :source-context 900
+                                        :target-context 900
+                                        :scroll-x       0
+                                        :now            0
+                                        :scroll-width   800}
+                          :annotations []
+                          :edits       []
+                          :duration    2000}))
+
+(def tick-proximity-max 16)
+(defn max-tick-count [visible-width] (u/floor (/ visible-width tick-proximity-max)))
+
 (def skip-levels
   (concat [1 5 10]                                          ;frames per tick
           [30 150 300]                                      ;seconds per tick
@@ -28,25 +43,10 @@
           [108000]                                          ;hours per tick
           ))
 
-(def tick-proximity-max 16)
-
-(defn max-tick-count [visible-width] (u/floor (/ visible-width tick-proximity-max)))
 (defn current-skip-level [visible-width context]
   (u/next-or-eq-item (/ context (max-tick-count visible-width)) skip-levels))
 
-(defn frame-skipped-frames [frame-skip visible-width context left-x right-x duration]
-  (let [left-frame (u/inv-frame-offset-x left-x visible-width context duration)
-        left-frame (- left-frame (mod left-frame frame-skip))
-        right-frame (u/inv-frame-offset-x right-x visible-width context duration)
-        right-frame (+ (- right-frame (mod right-frame frame-skip)) frame-skip)
-        last-frame (dec duration)
-        frames-maybe-missing-end (range left-frame (min right-frame last-frame) frame-skip)
-        frames (if (< right-frame last-frame)
-                 frames-maybe-missing-end
-                 (concat frames-maybe-missing-end [last-frame]))]
-    frames))
-
-(defn clip-scroll [x scroll-width context duration]
+(defn clip-scroll-x [x scroll-width context duration]
   (u/clip 0 x (+ 16 (- (* duration (/ scroll-width context)) scroll-width))))
 
 (defn clip-context [ctx scroll-width duration]
@@ -68,7 +68,7 @@
         new-focus-x (u/frame-offset-x focus-frame scroll-width context)
         ; scroll to put that new x value at the same offset from the left hand side as before
         new-scroll-x (- new-focus-x offset)
-        clipped-new-scroll-x (clip-scroll new-scroll-x scroll-width context duration)]
+        clipped-new-scroll-x (clip-scroll-x new-scroll-x scroll-width context duration)]
     (assoc new-timeline
       :scroll-x clipped-new-scroll-x)))
 
@@ -87,7 +87,7 @@
                        (< now-x left-edge) (- now-x left-buffer)
                        (> now-x right-edge) (+ (- now-x scroll-width) right-buffer)
                        true new-scroll-x)
-        clipped-new-scroll-x (clip-scroll new-scroll-x scroll-width context duration)]
+        clipped-new-scroll-x (clip-scroll-x new-scroll-x scroll-width context duration)]
     (assoc new-timeline
       :scroll-x clipped-new-scroll-x)))
 
@@ -134,8 +134,6 @@
   (stop-scrolling-context!)
   (set! -context-scroller (.requestAnimationFrame js/window -context-scroller-fn)))
 
-; Do this goofy declare/remove/define/add dance to make sure we don't put two
-; event handlers on the document.
 (defn change-context! [ctx scroll-focus-frame]
   (println "change context" ctx)
   (let [target (clip-context ctx (:scroll-width (:timeline @app-state)) (:duration @app-state))]
@@ -145,6 +143,9 @@
                     (merge old {:target-context target
                                 :source-context (:context old)})))
     (start-scrolling-context!)))
+
+; Do this goofy declare/remove/define/add dance to make sure we don't put two
+; event handlers on the document.
 (declare handle-keyboard!)
 (.removeEventListener js/document "keydown" handle-keyboard!)
 (defn handle-keyboard! [e]
@@ -155,7 +156,7 @@
         scroll-x (get-in @app-state [:timeline :scroll-x])
         scroll-width (:scroll-width (:timeline @app-state))
         skip (current-skip-level scroll-width context)
-        shown-ticks (frame-skipped-frames skip
+        shown-ticks (u/frame-skipped-frames skip
                                           scroll-width
                                           context
                                           0
@@ -203,143 +204,7 @@
         duration (:duration @app-state)]
     (om/transact! (om/root-cursor app-state)
                   [:timeline :scroll-x]
-                  #(clip-scroll x scroll-width context duration))))
-
-(defn scroll-thumb-width [data]
-  (let [duration (get-in data [:duration])
-        scroll-width (get-in data [:timeline :scroll-width])
-        context (get-in data [:timeline :context])
-        total-width (* duration (/ scroll-width context))
-        visible-portion (/ scroll-width total-width)]
-    (max 32 (* scroll-width visible-portion))))
-
-(defn scroll-thumb-x [data]
-  (let [duration (get-in data [:duration])
-        scroll-width (get-in data [:timeline :scroll-width])
-        context (get-in data [:timeline :context])
-        total-width (* duration (/ scroll-width context))
-        scroll-x (get-in data [:timeline :scroll-x])
-        thumb-width (scroll-thumb-width data)]
-    (min (- scroll-width thumb-width)
-         (* scroll-width (/ scroll-x total-width)))))
-
-(defn scroll-bar-bg-on-click! [owner e]
-  (let [px (.-pageX e)
-        data (om/get-props owner)
-        thumb-x (scroll-thumb-x data)
-        tl-cur (:timeline (om/get-props owner))]
-    (if (<= px thumb-x)
-      (scroll-to! (- (get-in tl-cur [:scroll-x])
-                     (get-in tl-cur [:scroll-width])))
-      (scroll-to! (+ (get-in tl-cur [:scroll-x])
-                     (get-in tl-cur [:scroll-width]))))))
-
-(defn add-scroll-listeners! [move up]
-  (.addEventListener js/window "mousemove" move)
-  (.addEventListener js/window "mouseup" up))
-
-(defn remove-scroll-listeners! [move up]
-  (.removeEventListener js/window "mousemove" move)
-  (.removeEventListener js/window "mouseup" up))
-
-(defn scroll-thumb [data owner]
-  (reify
-    om/IInitState
-    (init-state [_]
-      {:down    (async/chan)
-       :up      (async/chan)
-       :move    (async/chan)
-       :unmount (async/chan)})
-    om/IDidMount
-    (did-mount [_]
-      ; drag to move thumb and change scrollx
-      (let [{down :down up :up move :move unmount :unmount} (om/get-state owner)
-            up-listener #(do
-                          (when (= (.-button %) 0)
-                            (.preventDefault %)
-                            (.stopPropagation %)
-                            (async/put! up [(.-pageX %) (.-pageY %)]))
-                          true)
-            move-listener #(do
-                            (.preventDefault %)
-                            (.stopPropagation %)
-                            (async/put! move [(.-pageX %) (.-pageY %)])
-                            true)]
-        ; little state machine.
-        ; A. looks for unmount (and closes chans) or for down.
-        ; B. if down, adds move and up event listeners to js/window and loops waiting for:
-        ;   B1a. unmount (close chans, eval to :unmount)
-        ;   B1b. move (change scroll-x and recur) or
-        ;   B1c. up (change scroll-x, eval to :up)
-        ;   B2. then it removes those listeners and
-        ;   B3. if the result was not :unmount it recurs back to (A).
-        (async-m/go-loop []
-                         (async-m/alt!
-                           unmount :unmount
-                           down
-                           ([[start-x _y]]
-                             (do
-                               (add-scroll-listeners! move-listener up-listener)
-                               (let [props (om/get-props owner)
-                                     start-scroll-x (get-in props [:timeline :scroll-x])
-                                     scroll-width (get-in props [:timeline :scroll-width])
-                                     duration (get-in props [:duration])
-                                     context (get-in props [:timeline :context])
-                                     total-width (* duration (/ scroll-width context))
-                                     scaled-to-duration (fn [dx]
-                                                          (* (/ dx scroll-width) total-width))
-                                     do-scroll! (fn [x] (scroll-to! (+ start-scroll-x
-                                                                       (scaled-to-duration (- x start-x)))))
-                                     loop-result
-                                     (loop []
-                                       (async-m/alt!
-                                         unmount :unmount
-                                         move ([[x _y]]
-                                                (do-scroll! x)
-                                                (recur))
-                                         up ([[x _y]]
-                                              (do-scroll! x)
-                                              :up)))]
-                                 (remove-scroll-listeners! move-listener up-listener)
-                                 (when-not (= loop-result :unmount)
-                                   (recur)))))))))
-    om/IWillUnmount
-    (will-unmount [_]
-      (let [{down :down up :up move :move unmount :unmount} (om/get-state owner)]
-        (async/put! unmount :unmount)
-        (doseq [c [down up move unmount]] (async/close! c))))
-    om/IRender
-    (render [_]
-      (let [thumb-width (scroll-thumb-width data)
-            thumb-x (scroll-thumb-x data)
-            down-c (:down (om/get-state owner))]
-        (dom/div (clj->js {:style       {:position        "fixed"
-                                         :width           thumb-width
-                                         :height          16
-                                         :left            thumb-x
-                                         :bottom          0
-                                         :backgroundColor "darkgray"
-                                         :borderRadius    16}
-                           :onMouseDown #(do                ; must return true to avoid a React warning
-                                          (when (= (.-button %) 0)
-                                            (.preventDefault %)
-                                            (.stopPropagation %)
-                                            (async/put! down-c [(.-pageX %) (.-pageY %)]))
-                                          true)}))))))
-
-(defn scroll-bar [data owner]
-  (reify
-    om/IRender
-    (render [_]
-      (dom/div (clj->js {:style   {:position        "fixed"
-                                   :bottom          0
-                                   :left            0
-                                   :width           "100%"
-                                   :height          16
-                                   :backgroundColor "lightgray"}
-                         ; click to jump thumb and change scrollx
-                         :onClick (partial scroll-bar-bg-on-click! owner)})
-               (om/build scroll-thumb data)))))
+                  #(clip-scroll-x x scroll-width context duration))))
 
 (defn timeline-on-wheel! [owner e]
   (let [dx (.-deltaX e)
@@ -388,7 +253,7 @@
                                  :position        :absolute
                                  :left            (+ 6 (u/frame-offset-x (:frame data) w (:context data)))
                                  :top             0
-                                 :pointerEvents  "none"}})))))
+                                 :pointerEvents   "none"}})))))
 
 (defn tick-mark-label [data _owner {w :width}]
   (reify
@@ -411,7 +276,6 @@
                                     {:left (+ frame-x 10)}))})
                label-text)))))
 
-
 (defn preview-frame [data _owner {w :width h :height}]
   (reify
     om/IRender
@@ -429,8 +293,8 @@
                      :width  pw
                      :height h}
                     {:opts {:style (merge
-                                     {:position       :absolute
-                                      :top            16
+                                     {:position      :absolute
+                                      :top           16
                                       :pointerEvents "none"}
                                      (if is-last
                                        {:right 8}
@@ -507,7 +371,7 @@
             timecode-width-in-frames (u/pixels->frames max-label-width w context)
             tick-label-resolution (first (filter #(>= % timecode-width-in-frames)
                                                  (u/multiples frame-resolution)))
-            tick-frames (frame-skipped-frames frame-resolution
+            tick-frames (u/frame-skipped-frames frame-resolution
                                               w
                                               context
                                               (- scroll-x (/ w 4))
@@ -523,7 +387,7 @@
             preview-height (- h 24)
             preview-width (* (/ 4 3) preview-height)
             preview-width-in-frames (u/pixels->frames preview-width w context)
-            preview-frames (frame-skipped-frames (u/floor preview-width-in-frames)
+            preview-frames (u/frame-skipped-frames (u/floor preview-width-in-frames)
                                                  w
                                                  context
                                                  (- scroll-x (/ w 4))
@@ -552,8 +416,8 @@
                                         true %)
                                       preview-frame-data)
                                  preview-frame-data)
-            tick-opts {:opts {:width w :height h}}
-            preview-opts {:opts {:width w :height preview-height}}]
+            tick-opts {:opts {:width w :height h} :key :frame}
+            preview-opts {:opts {:width w :height preview-height} :key :frame}]
         (dom/div
           (clj->js {:style   {:overflowX "hidden"
                               :overflowY "none"
@@ -587,20 +451,11 @@
                                               :top           0}}))
                    (apply dom/div nil (om/build-all tick-mark-label (filter #(:label %) tick-mark-data) tick-opts)))
           (om/build playback-controls data)
-          (om/build scroll-bar data)
-          )))))
-
-(defonce app-state (atom {:source      (fip/frame-image-provider 2000)
-                          :metadata    {}
-                          :timeline    {:context        900
-                                        :source-context 900
-                                        :target-context 900
-                                        :scroll-x       0
-                                        :now            0
-                                        :scroll-width   800}
-                          :annotations []
-                          :edits       []
-                          :duration    2000}))
+          (om/build scroll-bar/scroll-bar
+                    {:total-width  (* duration (/ w context))
+                     :scroll-width w
+                     :scroll-x     scroll-x
+                     :callback scroll-to!}))))))
 
 (om/root
   (fn [data _owner]

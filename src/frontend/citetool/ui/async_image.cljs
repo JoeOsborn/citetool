@@ -16,8 +16,7 @@
       (let [state-data (async/<! receipt)]
         (when (and state-data (= (:now (om/get-props owner)) (:now data)))
           (om/set-state! owner state-data))
-        (async/close! receipt)
-        ))))
+        (async/close! receipt)))))
 
 (defn async-image [data owner opts]
   (reify
