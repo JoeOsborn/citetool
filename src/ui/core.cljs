@@ -50,6 +50,33 @@
     s
     (recur (str filler s) filler min-len)))
 
+(defn multiples [n]
+  (map #(* % n) (range 1 Infinity)))
+
+(defn pixels->frames [px scroll-width context]
+  (let [framesperpx (/ context scroll-width)]
+    (* px framesperpx)))
+
+(defn frames->pixels [f scroll-width context]
+  (let [pxperframe (/ scroll-width context)]
+    (* f pxperframe)))
+
+(defn timecode-label-width [label-str font-size]
+  (let [len (.-length label-str)]
+    (* len font-size)))
+
+(defn findp [pred coll]
+  (let [[result-code idx]
+        (reduce (fn [[code idx] item]
+                  (if (pred item)
+                    (reduced [:found idx])
+                    [code (inc idx)]))
+                [:not-found 0]
+                coll)]
+    (if (= result-code :found)
+      idx
+      :not-found)))
+
 ; max-time determines how unit padding happens.
 ; if it's <0, units will always be padded out to hours.
 ; if it's 0, units will never be padded.
@@ -197,6 +224,18 @@
                  (concat frames-maybe-missing-end [last-frame]))]
     frames))
 
+(defn shown-preview-frames [visible-width preview-width context left-x right-x duration]
+  (let [frame-skip (floor (pixels->frames preview-width visible-width context))
+        left-frame (inv-frame-offset-x left-x visible-width context duration)
+        left-frame (- left-frame (mod left-frame frame-skip))
+        right-frame (inv-frame-offset-x right-x visible-width context duration)
+        right-frame (+ (- right-frame (mod right-frame frame-skip)) frame-skip)
+        last-frame (dec duration)
+        frames-maybe-missing-end (range left-frame (min right-frame last-frame) frame-skip)
+        frames (if (< right-frame last-frame)
+                 frames-maybe-missing-end
+                 (concat frames-maybe-missing-end [last-frame]))]
+    frames))
 
 (defn abs [a] (.abs js/Math a))
 
@@ -552,7 +591,6 @@
             duration (:duration data)
             frame-x (frame-offset-x frame w (:context data))
             label-text (frame->timecode frame duration)
-            label-width (* 5 tick-proximity-max)
             font-size 14
             is-last (= frame (dec duration))]
         (dom/p (clj->js {:style (merge
@@ -566,32 +604,30 @@
                                     {:left (+ frame-x 10)}))})
                label-text)))))
 
-(defn multiples [n]
-  (map #(* % n) (range 1 Infinity)))
 
-(defn pixels->frames [px scroll-width context]
-  (let [framesperpx (/ context scroll-width)]
-    (* px framesperpx)))
-
-(defn frames->pixels [f scroll-width context]
-  (let [pxperframe (/ scroll-width context)]
-    (* f pxperframe)))
-
-(defn timecode-label-width [label-str font-size]
-  (let [len (.-length label-str)]
-    (* len font-size)))
-
-(defn findp [pred coll]
-  (let [[result-code idx]
-        (reduce (fn [[code idx] item]
-                  (if (pred item)
-                    (reduced [:found idx])
-                    [code (inc idx)]))
-                [:not-found 0]
-                coll)]
-    (if (= result-code :found)
-      idx
-      :not-found)))
+(defn preview-frame [data _owner {w :width h :height}]
+  (reify
+    om/IRender
+    (render [_]
+      (let [frame (:frame data)
+            duration (:duration data)
+            pw (:preview-width data)
+            frame-x (frame-offset-x frame w (:context data))
+            skip (:skip data)
+            is-last (= frame (dec duration))]
+        (when-not skip
+          (om/build async-image
+                  {:now    frame
+                   :source (:source data)
+                   :width  pw
+                   :height h}
+                  {:opts {:style (merge
+                                   {:position       :absolute
+                                    :top            16
+                                    :pointer-events "none"}
+                                   (if is-last
+                                     {:right 8}
+                                     {:left frame-x}))}}))))))
 
 (defn playback-controls [data owner]
   (reify
@@ -664,8 +700,6 @@
             timecode-width-in-frames (pixels->frames max-label-width w context)
             tick-label-resolution (first (filter #(>= % timecode-width-in-frames)
                                                  (multiples frame-resolution)))
-            ;preview-image-width (pixels->frames (* (/ 4 3) h) ...)
-            ;preview-image-resolution (least multiple of frame-resolution >= p-i-w)
             tick-frames (shown-tick-frames w
                                            context
                                            (- scroll-x (/ w 4))
@@ -678,6 +712,20 @@
                                                        {})]
                                          (merge base special)))
                                      tick-frames))
+            preview-height (- h 24)
+            preview-width (* (/ 4 3) preview-height)
+            preview-width-in-frames (pixels->frames preview-width w context)
+            preview-frames (shown-preview-frames w
+                                                 preview-width
+                                                 context
+                                                 (- scroll-x (/ w 4))
+                                                 (+ scroll-x w (/ w 2))
+                                                 duration)
+            preview-frame-data (vec (map (fn [f]
+                                           {:frame f :context context :duration duration
+                                            :preview-width preview-width
+                                            :source (get-in data [:source])})
+                                         preview-frames))
             final-frame (dec duration)
             has-final-frame (= (last tick-frames) final-frame)
             last-label-safe-frame (- final-frame (* 2 timecode-width-in-frames))
@@ -688,7 +736,16 @@
                                     true %)
                                   tick-mark-data)
                              tick-mark-data)
-            tick-opts {:opts {:width w :height h}}]
+            last-preview-safe-frame (- final-frame preview-width-in-frames)
+            preview-frame-data (if has-final-frame
+                             (map #(cond
+                                    (= (:frame %) final-frame) %
+                                    (>= (:frame %) last-preview-safe-frame) (assoc % :skip true)
+                                    true %)
+                                  preview-frame-data)
+                             preview-frame-data)
+            tick-opts {:opts {:width w :height h}}
+            preview-opts {:opts {:width w :height preview-height}}]
         (dom/div
           (clj->js {:style   {:overflow-x "hidden"
                               :overflow-y "none"
@@ -711,6 +768,7 @@
                                               :left                8
                                               :width               (str (* (/ w context) duration) "px")
                                               :height              (- h 32)}}))
+                   (apply dom/div nil (om/build-all preview-frame preview-frame-data preview-opts))
                    (apply dom/div nil (om/build-all tick-mark tick-mark-data tick-opts))
                    (dom/div (clj->js {:style {:border         "4px solid red"
                                               :width          "4px"
