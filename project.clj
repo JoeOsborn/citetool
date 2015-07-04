@@ -18,7 +18,9 @@
 
             :source-paths ["src/tools"]
 
-            :clean-targets ^{:protect false} ["resources/public/js/compiled" "target"]
+            :clean-targets ^{:protect false} ["resources/public/js/ui-core"
+                                              "resources/public/js/ui-core.js"
+                                              "target"]
 
             :cljsbuild {
                         :builds
@@ -29,7 +31,7 @@
                                          :pretty-print         true
                                          :cache-analysis       true
                                          :source-map-timestamp true}}
-                         {:source-paths ["src/ui"],
+                         {:source-paths ["src/frontend"],
                           :id           "frontend-dev",
                           :figwheel     {:on-jsload "citetool.ui.core/on-js-reload"}
                           :compiler     {:output-dir     "resources/public/js/ui-out"

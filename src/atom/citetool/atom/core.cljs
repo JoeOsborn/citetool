@@ -15,7 +15,7 @@
                                   :fullscreen false
                                   :web-preferences {:text-areas-are-resizable false}})))
   ; Path is relative to the compiled js file (main.js in our case)
-  (.loadUrl @main-window "http://localhost:3449/index.html")
+  (.loadUrl @main-window "http://localhost:3449/index.html" #js {:ignoreCache true})
   (.openDevTools @main-window #js {:detach true})
   (.on @main-window "closed" #(reset! main-window nil)))
 
