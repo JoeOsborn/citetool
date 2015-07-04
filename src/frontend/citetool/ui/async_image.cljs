@@ -11,15 +11,37 @@
         old-receipt (:receipt (om/get-state owner))]
     (when old-receipt
       (async/close! old-receipt))
-    (om/set-state! owner {:image-data standin :frame (:now data) :receipt receipt})
-    (async-m/go
-      (let [state-data (async/<! receipt)]
-        (when (and state-data (= (:now (om/get-props owner)) (:now data)))
-          (om/set-state! owner state-data))
-        (async/close! receipt)))))
+    (om/set-state! owner {:image-data (:image standin)
+                          :frame      (:frame standin)
+                          :receipt    receipt})
+    (async-m/go-loop []
+      (let [received-data (async/<! receipt)
+            standin-frame (:frame (:om/get-state owner))
+            target-frame (:now (om/get-props owner))]
+        (when-let [{frame :frame image-data :image-data} received-data]
+          (println "received" frame)
+          (cond
+            (= frame target-frame) (do
+                                     (println "got frame" frame)
+                                     (om/set-state! owner {:image-data image-data
+                                                           :frame      frame
+                                                           :receipt    nil})
+                                     (async/close! receipt))
+            (u/closer frame target-frame standin-frame) (do
+                                                          (println "updating standin from" standin-frame
+                                                                   "to" frame
+                                                                   "target" target-frame)
+                                                          (om/set-state! owner {:image-data image-data
+                                                                                :frame      frame
+                                                                                :receipt    nil})
+                                                          (recur))
+            true (recur)))))))
 
 (defn async-image [data owner opts]
   (reify
+    om/IInitState
+    (init-state [_]
+      {:image-data nil :frame nil :receipt nil})
     om/IWillMount
     (will-mount [_]
       (println "MOUNT make query for " (:now data))

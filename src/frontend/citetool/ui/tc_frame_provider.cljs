@@ -26,12 +26,14 @@
 (defn frame-image-provider [duration]
   (let [requests (async/chan)
         responses (async/chan)
+        mult (async/mult responses)
         fake-ms-per-frame 1]
     (async-m/go-loop
       [last-frame 0]
       (let [request (async/<! requests)]
         (if-let [{frame :frame} request]
           (do
+            (println "req made" frame)
             (async/<! (async/timeout (if (>= frame last-frame)
                                        ;simulate running from last-frame to frame
                                        (* fake-ms-per-frame (- frame last-frame))
@@ -42,4 +44,4 @@
           (do
             (println "Unrecognized request " request)
             (recur last-frame)))))
-    {:out (async/pub responses :frame) :in requests}))
+    {:out mult :in requests}))

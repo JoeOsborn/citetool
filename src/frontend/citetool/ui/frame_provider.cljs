@@ -11,6 +11,6 @@
 ; Provider should be an {:out pub :in chan} map
 (defn request-frame [provider frame]
   (let [resp (async/chan)]
-    (async/sub (:out provider) frame resp true)
+    (async/tap (:out provider) resp)
     (async/put! (:in provider) {:frame frame})
-    {:channel resp :stand-in star-img}))
+    {:channel resp :stand-in {:image star-img :frame -1000}}))
