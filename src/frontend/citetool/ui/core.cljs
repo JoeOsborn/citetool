@@ -157,11 +157,11 @@
         scroll-width (:scroll-width (:timeline @app-state))
         skip (current-skip-level scroll-width context)
         shown-ticks (u/frame-skipped-frames skip
-                                          scroll-width
-                                          context
-                                          0
-                                          (u/frame-offset-x (dec duration) scroll-width context)
-                                          duration)
+                                            scroll-width
+                                            context
+                                            0
+                                            (u/frame-offset-x (dec duration) scroll-width context)
+                                            duration)
         max-ticks (max-tick-count scroll-width)
         nearest-tick-left (u/prev-item now shown-ticks)
         nearest-tick-right (u/next-item now shown-ticks)
@@ -372,11 +372,11 @@
             tick-label-resolution (first (filter #(>= % timecode-width-in-frames)
                                                  (u/multiples frame-resolution)))
             tick-frames (u/frame-skipped-frames frame-resolution
-                                              w
-                                              context
-                                              (- scroll-x (/ w 4))
-                                              (+ scroll-x w (/ w 2))
-                                              duration)
+                                                w
+                                                context
+                                                (- scroll-x (/ w 4))
+                                                (+ scroll-x w (/ w 2))
+                                                duration)
             tick-mark-data (vec (map (fn [f]
                                        (let [base {:frame f :context context}
                                              special (if (= (mod f tick-label-resolution) 0)
@@ -388,11 +388,11 @@
             preview-width (* (/ 4 3) preview-height)
             preview-width-in-frames (u/pixels->frames preview-width w context)
             preview-frames (u/frame-skipped-frames (u/floor preview-width-in-frames)
-                                                 w
-                                                 context
-                                                 (- scroll-x (/ w 4))
-                                                 (+ scroll-x w (/ w 2))
-                                                 duration)
+                                                   w
+                                                   context
+                                                   (- scroll-x (/ w 4))
+                                                   (+ scroll-x w (/ w 2))
+                                                   duration)
             preview-frame-data (vec (map (fn [f]
                                            {:frame         f :context context :duration duration
                                             :preview-width preview-width
@@ -455,7 +455,7 @@
                     {:total-width  (* duration (/ w context))
                      :scroll-width w
                      :scroll-x     scroll-x
-                     :callback scroll-to!}))))))
+                     :callback     scroll-to!}))))))
 
 (om/root
   (fn [data _owner]
