@@ -109,5 +109,10 @@
                  (concat frames-maybe-missing-end [last-frame]))]
     frames))
 
+(defn closer? [new-num target-num existing-num]
+  (< (abs (- target-num new-num)) (abs (- target-num existing-num))))
+
 (defn closer [new-num target-num existing-num]
-  (< (abs (- target-num new-num)) (abs (- existing-num new-num))))
+  (if (closer? new-num target-num existing-num)
+    new-num
+    existing-num))

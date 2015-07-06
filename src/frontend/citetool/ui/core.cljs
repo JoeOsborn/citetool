@@ -5,6 +5,7 @@
             [om.core :as om :include-macros true]
             [om.dom :as dom :include-macros true]
             [citetool.ui.util :as u]
+            [citetool.ui.frame-provider :as fp]
             [citetool.ui.tc-frame-provider :as fip]
             [citetool.ui.async-image :as async-image]
             [citetool.ui.scroll-bar :as scroll-bar]))
@@ -21,17 +22,17 @@
 (defn on-js-reload []
   (om/transact! (om/root-cursor app-state) [:__figwheel_counter] inc))
 
-(defonce app-state (atom {:source      (fip/frame-image-provider 2000)
-                          :metadata    {}
-                          :timeline    {:context        900
-                                        :source-context 900
-                                        :target-context 900
-                                        :scroll-x       0
-                                        :now            0
-                                        :scroll-width   800}
-                          :annotations []
-                          :edits       []
-                          :duration    2000}))
+(def app-state (atom {:source      (fp/make-frame-source (fip/frame-image-provider 2000))
+                      :metadata    {}
+                      :timeline    {:context        2000
+                                    :source-context 2000
+                                    :target-context 2000
+                                    :scroll-x       0
+                                    :now            0
+                                    :scroll-width   800}
+                      :annotations []
+                      :edits       []
+                      :duration    2000}))
 
 (def tick-proximity-max 16)
 (defn max-tick-count [visible-width] (u/floor (/ visible-width tick-proximity-max)))
@@ -96,7 +97,7 @@
   (om/transact! (om/root-cursor app-state) [:timeline]
                 (fn [old-timeline]
                   (let [new-timeline (assoc old-timeline
-                                       :now (u/clip 0 frame (:duration @app-state)))]
+                                       :now (u/clip 0 frame (dec (:duration @app-state))))]
                     (if autoscroll?
                       (autoscroll-x-playhead old-timeline
                                              new-timeline)

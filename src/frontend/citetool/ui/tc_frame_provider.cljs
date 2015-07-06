@@ -26,7 +26,6 @@
 (defn frame-image-provider [duration]
   (let [requests (async/chan)
         responses (async/chan)
-        mult (async/mult responses)
         fake-ms-per-frame 1]
     (async-m/go-loop
       [last-frame 0]
@@ -44,4 +43,4 @@
           (do
             (println "Unrecognized request " request)
             (recur last-frame)))))
-    {:out mult :in requests}))
+    {:out responses :in requests}))
