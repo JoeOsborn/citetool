@@ -22,17 +22,17 @@
 (defn on-js-reload []
   (om/transact! (om/root-cursor app-state) [:__figwheel_counter] inc))
 
-(def app-state (atom {:source      (fp/make-frame-source (fip/frame-image-provider 2000))
-                      :metadata    {}
-                      :timeline    {:context        2000
-                                    :source-context 2000
-                                    :target-context 2000
-                                    :scroll-x       0
-                                    :now            0
-                                    :scroll-width   800}
-                      :annotations []
-                      :edits       []
-                      :duration    2000}))
+(defonce app-state (atom {:source      (fp/make-frame-source (fip/frame-image-provider 200))
+                          :metadata    {}
+                          :timeline    {:context        200
+                                        :source-context 200
+                                        :target-context 200
+                                        :scroll-x       0
+                                        :now            0
+                                        :scroll-width   800}
+                          :annotations []
+                          :edits       []
+                          :duration    200}))
 
 (def tick-proximity-max 16)
 (defn max-tick-count [visible-width] (u/floor (/ visible-width tick-proximity-max)))
@@ -288,18 +288,19 @@
             skip (:skip data)
             is-last (= frame (dec duration))]
         (when-not skip
+          (println "f" frame "ox" frame-x)
           (om/build async-image/async-image
                     {:now    frame
                      :source (:source data)
                      :width  pw
-                     :height h}
-                    {:opts {:style (merge
-                                     {:position      :absolute
-                                      :top           16
-                                      :pointerEvents "none"}
-                                     (if is-last
-                                       {:right 8}
-                                       {:left frame-x}))}}))))))
+                     :height h
+                     :attrs {:style (merge
+                                      {:position      :absolute
+                                       :top           16
+                                       :pointerEvents "none"}
+                                      (if is-last
+                                        {:right 8}
+                                        {:left frame-x}))}}))))))
 
 (defn playback-controls [data _owner]
   (reify
@@ -467,8 +468,8 @@
                            {:now    (get-in data [:timeline :now])
                             :source (:source data)
                             :width  640
-                            :height 480}
-                           {:opts {:style {:marginLeft 80}}})
+                            :height 480
+                            :attrs {:style {:marginLeft 80}}})
                  (om/build timeline
                            {:timeline (:timeline data)
                             :edits    (:edits data)

@@ -6,40 +6,45 @@
             [citetool.ui.frame-provider :as fp])
   (:require-macros [cljs.core.async.macros :as async-m]))
 
+(defn -cancel-pending-request! [owner]
+  (let [old-receipt (:receipt (om/get-state owner))]
+    (when old-receipt
+      ;cancel and...
+      (async/close! old-receipt))))
+
 (defn- -update-async-image! [data owner]
+  (-cancel-pending-request! owner)
   (fp/request-frame
     (:source data) (:now data)
     (fn [{receipt :channel standin :stand-in}]
-      (let [old-receipt (:receipt (om/get-state owner))]
-        (when old-receipt (async/close! old-receipt))
-        (println "in callback with" (:frame standin))
-        (om/set-state! owner {:image-data (:image-data standin)
-                              :frame      (:frame standin)
-                              :receipt    receipt})
-        (async-m/go-loop []
-                         (let [received-data (async/<! receipt)
-                               standin-frame (:frame (om/get-state owner))
-                               target-frame (:now (om/get-props owner))]
-                           (when-let [{frame :frame image-data :image-data} received-data]
-                             (println "received" frame)
-                             (cond
-                               (= frame target-frame) (do
-                                                        (println "got frame" frame)
-                                                        (om/set-state! owner {:image-data image-data
-                                                                              :frame      frame
-                                                                              :receipt    nil})
-                                                        (async/close! receipt))
-                               (u/closer? frame target-frame standin-frame) (do
-                                                                              (println "updating standin from" standin-frame
-                                                                                       "to" frame
-                                                                                       "target" target-frame)
-                                                                              (om/set-state! owner {:image-data image-data
-                                                                                                    :frame      frame
-                                                                                                    :receipt    nil})
-                                                                              (recur))
-                               true (recur)))))))))
+      (println "in callback with" (:frame standin))
+      (om/set-state! owner {:image-data (:image-data standin)
+                            :frame      (:frame standin)
+                            :receipt    receipt})
+      (async-m/go-loop []
+                       (let [received-data (async/<! receipt)
+                             standin-frame (:frame (om/get-state owner))
+                             target-frame (:now (om/get-props owner))]
+                         (when-let [{frame :frame image-data :image-data} received-data]
+                           (println "received" frame)
+                           (cond
+                             (= frame target-frame) (do
+                                                      (println "got frame" frame)
+                                                      (om/set-state! owner {:image-data image-data
+                                                                            :frame      frame
+                                                                            :receipt    nil})
+                                                      (async/close! receipt))
+                             (u/closer? frame target-frame standin-frame) (do
+                                                                            (println "updating standin from" standin-frame
+                                                                                     "to" frame
+                                                                                     "target" target-frame)
+                                                                            (om/set-state! owner {:image-data image-data
+                                                                                                  :frame      frame
+                                                                                                  :receipt    nil})
+                                                                            (recur))
+                             true (recur))))))))
 
-(defn async-image [data owner opts]
+(defn async-image [data owner]
   (reify
     om/IInitState
     (init-state [_]
@@ -48,6 +53,9 @@
     (will-mount [_]
       (println "MOUNT make query for " (:now data))
       (-update-async-image! data owner))
+    om/IWillUnmount
+    (will-unmount [_]
+      (-cancel-pending-request! owner))
     om/IWillReceiveProps
     (will-receive-props [_ new-props]
       (when (or (not= (:now new-props) (:now (om/get-props owner)))
@@ -57,6 +65,6 @@
     om/IRenderState
     (render-state [_ {image-data :image-data}]
       (dom/img (clj->js (merge {:src image-data :width (:width data) :height (:height data)}
-                               opts))))))
+                               (:attrs data)))))))
 
 
