@@ -11,7 +11,7 @@
         old-pc-id (:precache-id (om/get-state owner))]
     (when old-receipt
       ;cancel and close channel
-      (async/put! (:source data) {:type :cancel-precache :precache-id old-pc-id})
+      (fp/cancel-precache (:source data) old-pc-id)
       (async/close! old-receipt))))
 
 (defn- -update-async-image! [data owner]
@@ -19,7 +19,7 @@
   (fp/request-frame
     (:source data) (:now data)
     (fn [{receipt :channel standin :stand-in pc-id :precache-id}]
-      (println "in callback with" (:frame standin))
+      (println "in callback with" (:frame standin) pc-id)
       (om/set-state! owner {:image-data  (:image-data standin)
                             :frame       (:frame standin)
                             :precache-id pc-id

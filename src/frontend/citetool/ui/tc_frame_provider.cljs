@@ -32,21 +32,24 @@
       (let [request (async/<! requests)]
         (println "tc got req" request)
         (if-let [{rs :ranges} request]
-          (do
-            (println "a" rs)
-            (async/<! (async/timeout (if (>= (ffirst rs) last-frame)
-                                       ;simulate running from last-frame to frame
-                                       (* fake-ms-per-frame (- (ffirst rs) last-frame))
-                                       ;otherwise simulate running from 0
-                                       (* fake-ms-per-frame (ffirst rs)))))
-            (println "b")
-            (doseq [[m n step] rs
-                    frame (range m (inc n) step)]
-              (println "req made" frame)
-              (async/>! responses {:frame frame, :image-data (frame-image-data frame duration)})
-              ; not quite correct, sort of double counts n
-              (async/<! (async/timeout (* fake-ms-per-frame step))))
-            (recur (second (last rs))))
+          (if (empty? rs)
+            (do
+              (println "empty request" request)
+              (recur last-frame))
+            (do
+              (async/<! (async/timeout (if (>= (ffirst rs) last-frame)
+                                         ;simulate running from last-frame to frame
+                                         (* fake-ms-per-frame (- (ffirst rs) last-frame))
+                                         ;otherwise simulate running from 0
+                                         (* fake-ms-per-frame (ffirst rs)))))
+              (println "b")
+              (doseq [[m n step] rs
+                      frame (range m (inc n) step)]
+                (println "req made" frame)
+                (async/>! responses {:frame frame, :image-data (frame-image-data frame duration)})
+                ; not quite correct, sort of double counts n
+                (async/<! (async/timeout (* fake-ms-per-frame step))))
+              (recur (second (last rs)))))
           (do
             (println "Unrecognized request " request)
             (recur last-frame)))))

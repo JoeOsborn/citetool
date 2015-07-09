@@ -23,7 +23,7 @@
     [m (nearest-above n step (mod n step)) step]
     [m n step]))
 
-(defn range-make-single [f] (range-make f (inc f) 1))
+(defn range-make-single [f] (range-make f f 1))
 
 #_(defn range-make-single [m] (range-make m m 1))
 
@@ -128,23 +128,28 @@
 (defn maybe-advance-queue! [cache queue providers]
   (if-let [pc (first queue)]
     (if-let [free-src-i (u/findp #(= (second %) nil) providers)]
-      (let [_ (println "dosub" (:effective-range pc) "-" cache)
+      (let [_ (println "dosub" (:effective-range pc) "-" (map #(range-make-single (:frame %)) cache))
             r (reduce (fn [r1 r2] (if (empty? r1) (reduced r1) (range- r1 r2)))
                       (:effective-range pc)
                       (map #(range-make-single (:frame %)) cache))
-            ;todo: update birthdays and associate images with pc
-            new-queue (rest queue)
-            [provider _] (get providers free-src-i)
-            _ (println "provs" providers free-src-i "pc" pc "cache" cache)
-            new-providers (assoc-in providers [free-src-i 1] (assoc pc :effective-range r))
-            _ (println "new-provs" new-providers)]
-        (async/put! (:in provider) {:ranges (range->min-max-steps r)})
-        [cache new-queue new-providers])
+            new-queue (rest queue)]
+        (if (empty? r)
+          (do
+            (println "skip empty queue entry" r)
+            ;todo: unassociate pc with images in cache
+            (maybe-advance-queue! cache new-queue providers))
+          (let [;todo: update birthdays and associate images with pc
+                [provider _] (get providers free-src-i)
+                _ (println "provs" providers free-src-i "pc" pc "cache" cache)
+                new-providers (assoc-in providers [free-src-i 1] (assoc pc :effective-range r))
+                _ (println "new-provs" new-providers)]
+            (async/put! (:in provider) {:ranges (range->min-max-steps r)})
+            [cache new-queue new-providers])))
       [cache queue providers])
     [cache queue providers]))
 
 (defn queue-drop-with-id [queue pc-id]
-  (filterv #(not= :precache-id pc-id) queue))
+  (filterv #(not= (:precache-id %) pc-id) queue))
 
 (defn queue-push [queue pc] (conj queue pc))
 
@@ -172,10 +177,10 @@
        precache-id 0
        queue (vector)
        providers (mapv (fn [p] [p nil]) providers)]
-      (println "about to go")
       (let [cache cache providers providers precache-id precache-id queue queue] ;silence IntelliJ warnings
-        (println "yep" pouts)
+        (println "about to go")
         (let [[val port] (async/alts! channels)]
+          (println "got input" val port)
           (if (= sin port)
             (let [msg val
                   {mtype :type} msg]
@@ -186,10 +191,12 @@
                                      outc (:standin-channel msg)]
                                  (if (= f frame)
                                    (do                      ;send standin and update birthday but not precache and leave pcid alone
-                                     (async/put! outc {:image-data image-data :frame frame :precache-id nil})
+                                     (async/put! outc {:stand-in {:image-data image-data :frame frame}
+                                                       :precache-id nil})
                                      (recur (cache-update-birthday cache f (now)) precache-id queue providers))
                                    (do                      ;send standin and precache with set ID and increment pcid
-                                     (async/put! outc {:image-data image-data :frame frame :precache-id precache-id})
+                                     (async/put! outc {:stand-in {:image-data image-data :frame frame}
+                                                       :precache-id precache-id})
                                      (async/put! sin {:type        :precache-frames
                                                       :range       [f f 1]
                                                       :precache-id precache-id})
@@ -206,6 +213,7 @@
                                    (when-let [outc (:precache-id-channel msg)]
                                      (async/put! outc {:precache-id precache-id}))
                                    (let [[new-cache new-queue new-providers] (maybe-advance-queue! cache new-queue providers)]
+                                     (println "new-provs" new-providers)
                                      (recur new-cache
                                             ; try to avoid using the same precache-id twice
                                             (if (number? (:precache-id pc))
@@ -213,8 +221,10 @@
                                               precache-id)
                                             new-queue
                                             new-providers)))
-                :cancel-precache (let [pc-id {:precache-id msg}
+                :cancel-precache (let [pc-id (:precache-id msg)
                                        pc-idx (u/findp #(= (:precache-id %) pc-id) queue)]
+                                   (println "cancel" pc-id ":" pc-idx "=" (get queue pc-idx) "of" queue)
+                                   (println "new queue" (queue-drop-with-id queue pc-id))
                                    ;todo: remove pc-id from images in cache
                                    ;todo: re-trim pcs of lower priority/higher idx than pc
                                    (recur cache precache-id (queue-drop-with-id queue pc-id) providers))))
@@ -259,7 +269,11 @@
     (async/tap (:out source) resp)
     (async/put! (:in source) {:type :request-frame :frame frame :standin-channel standin-resp})
     (async/take! standin-resp
-                 (fn [standin]
-                   (println "got standin" (:frame standin))
+                 (fn [{standin :stand-in pc-id :precache-id}]
+                   (println "got standin" standin)
                    (async/close! standin-resp)
-                   (cb {:channel resp :stand-in standin})))))
+                   (cb {:channel resp :stand-in standin :precache-id pc-id})))))
+
+(defn cancel-precache [source pc-id]
+  (when-not (nil? pc-id)
+    (async/put! (:in source) {:type :cancel-precache :precache-id pc-id})))
