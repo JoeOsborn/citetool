@@ -60,7 +60,6 @@
 (defn range->min-max-steps [full-r]
   ;  (println "reduce" full-r)
   (reduce (fn [rs f]
-            (println "r" rs f)
             (if (empty? rs)
               ;start with a temp range
               [[f f 1]]
@@ -96,8 +95,7 @@
     (sorted-index-of- cache f 0 len 0)))
 
 (defn sorted-insert [cache frame]
-  (let [insert-idx (sorted-index-of cache (:frame frame))
-        _ (println "insert-idx:" insert-idx)]
+  (let [insert-idx (sorted-index-of cache (:frame frame))]
     (if (or (>= insert-idx (count cache))
             (= (:frame frame) (:frame (get cache insert-idx))))
       (assoc cache insert-idx frame)
@@ -120,29 +118,22 @@
 
 (defn trim-cache [cache kill-date]
   ;todo: also only filter ones without active precaches
-  (println "old size" (count cache))
-  (let [new-cache (filterv #(>= (:birthday %) kill-date) cache)]
-    (println "new size" (count new-cache))
-    new-cache))
+  (filterv #(>= (:birthday %) kill-date) cache))
 
 (defn maybe-advance-queue! [cache queue providers]
   (if-let [pc (first queue)]
     (if-let [free-src-i (u/findp #(= (second %) nil) providers)]
-      (let [_ (println "dosub" (:effective-range pc) "-" (map #(range-make-single (:frame %)) cache))
-            r (reduce (fn [r1 r2] (if (empty? r1) (reduced r1) (range- r1 r2)))
+      (let [r (reduce (fn [r1 r2] (if (empty? r1) (reduced r1) (range- r1 r2)))
                       (:effective-range pc)
                       (map #(range-make-single (:frame %)) cache))
             new-queue (rest queue)]
         (if (empty? r)
           (do
-            (println "skip empty queue entry" r)
             ;todo: unassociate pc with images in cache
             (maybe-advance-queue! cache new-queue providers))
           (let [;todo: update birthdays and associate images with pc
                 [provider _] (get providers free-src-i)
-                _ (println "provs" providers free-src-i "pc" pc "cache" cache)
-                new-providers (assoc-in providers [free-src-i 1] (assoc pc :effective-range r))
-                _ (println "new-provs" new-providers)]
+                new-providers (assoc-in providers [free-src-i 1] (assoc pc :effective-range r))]
             (async/put! (:in provider) {:ranges (range->min-max-steps r)})
             [cache new-queue new-providers])))
       [cache queue providers])
@@ -155,7 +146,6 @@
 
 (defn cache-update-birthday [cache f date]
   (let [idx (sorted-index-of cache f)
-        _ (println "idx:" idx)
         frame (get cache idx)
         frame-f (:frame frame)]
     (if (= frame-f f)
@@ -170,7 +160,6 @@
         sin (async/chan)
         sout (async/chan)
         channels (conj pouts sin)]
-    (println "looping")
     (async-m/go-loop
       ;todo: use some avl tree or sorted vec or sorted JS array or something for speed.
       [cache (vector)
@@ -178,13 +167,10 @@
        queue (vector)
        providers (mapv (fn [p] [p nil]) providers)]
       (let [cache cache providers providers precache-id precache-id queue queue] ;silence IntelliJ warnings
-        (println "about to go")
         (let [[val port] (async/alts! channels)]
-          (println "got input" val port)
           (if (= sin port)
             (let [msg val
                   {mtype :type} msg]
-              (println "got sin" msg mtype)
               (case mtype
                 :request-frame (let [f (:frame msg)
                                      {:keys [image-data frame]} (get-best-standin cache f)
@@ -205,7 +191,6 @@
                                        pc {:range           [m n step]
                                            :effective-range (range-make m n step)
                                            :precache-id     (or (:precache-id msg) precache-id)}
-                                       _ (println "made pc" pc)
                                        new-queue (queue-push queue pc)]
                                    ;todo: add pc to images in cache
                                    ;todo: trim pc by cache, providers, higher-priority elements of queue
@@ -213,7 +198,6 @@
                                    (when-let [outc (:precache-id-channel msg)]
                                      (async/put! outc {:precache-id precache-id}))
                                    (let [[new-cache new-queue new-providers] (maybe-advance-queue! cache new-queue providers)]
-                                     (println "new-provs" new-providers)
                                      (recur new-cache
                                             ; try to avoid using the same precache-id twice
                                             (if (number? (:precache-id pc))
@@ -223,37 +207,27 @@
                                             new-providers)))
                 :cancel-precache (let [pc-id (:precache-id msg)
                                        pc-idx (u/findp #(= (:precache-id %) pc-id) queue)]
-                                   (println "cancel" pc-id ":" pc-idx "=" (get queue pc-idx) "of" queue)
-                                   (println "new queue" (queue-drop-with-id queue pc-id))
                                    ;todo: remove pc-id from images in cache
                                    ;todo: re-trim pcs of lower priority/higher idx than pc
                                    (recur cache precache-id (queue-drop-with-id queue pc-id) providers))))
             ;must be a provider
             (let [frame val pout port
-                  _ (println "got p" frame pout)
                   now (now)
                   prov-i (u/findp #(= pout %) pouts)
-                  _ (println "a")
                   [prov src-pc] (get providers prov-i)
-                  _ (println "b" src-pc)
                   range (range- (:effective-range src-pc) (range-make-single (:frame frame)))
-                  _ (println "c" range)
                   new-pc (assoc src-pc :effective-range range)
                   ;todo: associate with images in cache
                   pc-id (:precache-id src-pc)
                   kill-date (- now 10000)                   ; cache hard time limit
                   frame (assoc frame :birthday now)
-                  _ (println "insert" frame)
                   new-cache (sorted-insert cache frame)
-                  _ (println "done")
                   new-cache (if (> (count new-cache) 100)   ; cache soft size limit
                               (trim-cache new-cache kill-date)
                               new-cache)]
               (async/put! sout frame)
               (if (range-empty? range)
-                (let [_ (println "hi" (get providers prov))
-                      [new-cache new-queue new-providers] (maybe-advance-queue! new-cache queue (assoc providers prov-i [prov nil]))
-                      _ (println "hey")]
+                (let [[new-cache new-queue new-providers] (maybe-advance-queue! new-cache queue (assoc providers prov-i [prov nil]))]
                   ;todo: remove pc from images in cache
                   (recur new-cache precache-id new-queue new-providers))
                 (recur new-cache
@@ -270,7 +244,6 @@
     (async/put! (:in source) {:type :request-frame :frame frame :standin-channel standin-resp})
     (async/take! standin-resp
                  (fn [{standin :stand-in pc-id :precache-id}]
-                   (println "got standin" standin)
                    (async/close! standin-resp)
                    (cb {:channel resp :stand-in standin :precache-id pc-id})))))
 

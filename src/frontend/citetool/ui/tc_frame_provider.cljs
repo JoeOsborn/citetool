@@ -30,7 +30,6 @@
     (async-m/go-loop
       [last-frame 0]
       (let [request (async/<! requests)]
-        (println "tc got req" request)
         (if-let [{rs :ranges} request]
           (if (empty? rs)
             (do
@@ -42,7 +41,6 @@
                                          (* fake-ms-per-frame (- (ffirst rs) last-frame))
                                          ;otherwise simulate running from 0
                                          (* fake-ms-per-frame (ffirst rs)))))
-              (println "b")
               (doseq [[m n step] rs
                       frame (range m (inc n) step)]
                 (println "req made" frame)
