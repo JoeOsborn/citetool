@@ -34,16 +34,17 @@
                                          :source-map-timestamp true}}
                          {:source-paths ["src/frontend"],
                           :id           "frontend-dev",
-                          :figwheel     {:on-jsload "citetool.ui.core/on-js-reload"}
+                          :figwheel     {:on-jsload "citetool.ui.core/on-js-reload"
+                                         :nrepl-port   7888}
                           :compiler     {:output-dir     "resources/public/js/ui-out"
                                          :output-to      "resources/public/js/ui-core.js",
                                          :optimizations  :none
                                          ; :pretty-print true
                                          :source-map     true
                                          :cache-analysis true}}]}
-            :figwheel {:css-dirs     ["resources/public/css"] ;; watch and update CSS
-                       :ring-handler figwheel-middleware/app
-                       :nrepl-port   7888
+            :figwheel {:ring-handler figwheel-middleware/app
+                       :server-port 3449
+                       :css-dirs ["resources/public/css"]
                        ;; To be able to open files in your editor from the heads up display
                        ;; you will need to put a script on your path.
                        ;; that script will have to take a file path and a line number

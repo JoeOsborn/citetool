@@ -53,11 +53,11 @@
                   (if (pred item)
                     (reduced [:found idx])
                     [code (inc idx)]))
-                [:not-found 0]
+                [nil 0]
                 coll)]
     (if (= result-code :found)
       idx
-      :not-found)))
+      nil)))
 
 ; max-time determines how unit padding happens.
 ; if it's <0, units will always be padded out to hours.

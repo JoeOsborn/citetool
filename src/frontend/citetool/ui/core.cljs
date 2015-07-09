@@ -22,7 +22,7 @@
 (defn on-js-reload []
   (om/transact! (om/root-cursor app-state) [:__figwheel_counter] inc))
 
-(defonce app-state (atom {:source      (fp/make-frame-source (fip/frame-image-provider 200))
+(defonce app-state (atom {:source      (fp/make-frame-source [(fip/frame-image-provider 200)])
                           :metadata    {}
                           :timeline    {:context        200
                                         :source-context 200

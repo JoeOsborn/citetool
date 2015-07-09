@@ -6,41 +6,46 @@
             [citetool.ui.frame-provider :as fp])
   (:require-macros [cljs.core.async.macros :as async-m]))
 
-(defn -cancel-pending-request! [owner]
-  (let [old-receipt (:receipt (om/get-state owner))]
+(defn -cancel-pending-request! [data owner]
+  (let [old-receipt (:receipt (om/get-state owner))
+        old-pc-id (:precache-id (om/get-state owner))]
     (when old-receipt
-      ;cancel and...
+      ;cancel and close channel
+      (async/put! (:source data) {:type :cancel-precache :precache-id old-pc-id})
       (async/close! old-receipt))))
 
 (defn- -update-async-image! [data owner]
-  (-cancel-pending-request! owner)
+  (-cancel-pending-request! data owner)
   (fp/request-frame
     (:source data) (:now data)
-    (fn [{receipt :channel standin :stand-in}]
+    (fn [{receipt :channel standin :stand-in pc-id :precache-id}]
       (println "in callback with" (:frame standin))
-      (om/set-state! owner {:image-data (:image-data standin)
-                            :frame      (:frame standin)
-                            :receipt    receipt})
+      (om/set-state! owner {:image-data  (:image-data standin)
+                            :frame       (:frame standin)
+                            :precache-id pc-id
+                            :receipt     receipt})
       (async-m/go-loop []
                        (let [received-data (async/<! receipt)
                              standin-frame (:frame (om/get-state owner))
-                             target-frame (:now (om/get-props owner))]
+                             target-frame (:now data)]
                          (when-let [{frame :frame image-data :image-data} received-data]
                            (println "received" frame)
                            (cond
                              (= frame target-frame) (do
                                                       (println "got frame" frame)
-                                                      (om/set-state! owner {:image-data image-data
-                                                                            :frame      frame
-                                                                            :receipt    nil})
+                                                      (om/set-state! owner {:image-data  image-data
+                                                                            :frame       frame
+                                                                            :precache-id nil
+                                                                            :receipt     nil})
                                                       (async/close! receipt))
                              (u/closer? frame target-frame standin-frame) (do
                                                                             (println "updating standin from" standin-frame
                                                                                      "to" frame
                                                                                      "target" target-frame)
-                                                                            (om/set-state! owner {:image-data image-data
-                                                                                                  :frame      frame
-                                                                                                  :receipt    nil})
+                                                                            (om/set-state! owner {:image-data  image-data
+                                                                                                  :frame       frame
+                                                                                                  :precache-id pc-id
+                                                                                                  :receipt     receipt})
                                                                             (recur))
                              true (recur))))))))
 
@@ -55,7 +60,7 @@
       (-update-async-image! data owner))
     om/IWillUnmount
     (will-unmount [_]
-      (-cancel-pending-request! owner))
+      (-cancel-pending-request! data owner))
     om/IWillReceiveProps
     (will-receive-props [_ new-props]
       (when (or (not= (:now new-props) (:now (om/get-props owner)))
