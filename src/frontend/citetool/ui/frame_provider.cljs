@@ -116,6 +116,13 @@
                l
                r)))))
 
+(defn cache-get-exact [cache f]
+  (let [idx (sorted-index-of cache f)
+        s (get cache idx)]
+    (if (= (:frame s) f)
+      s
+      nil)))
+
 (defn cache-update-birthday [cache f date]
   (let [idx (sorted-index-of cache f)
         frame (get cache idx)
@@ -129,6 +136,8 @@
   ;todo: also only filter ones without active precaches
   (filterv #(>= (:birthday %) kill-date) cache))
 
+;todo: probably better to go through pc's range and find cache entries.
+; or at least only go from first-found-entry-index to last-found-entry-index
 (defn cache-trim-precache [cache pc]
   (let [now (now)
         ;todo: associate images with pc
@@ -177,7 +186,7 @@
       (let [[cache pc] (cache-trim-precache cache pc)
             pc (actives-trim-precache providers pc)
             r (:effective-range pc)
-            new-queue (rest queue)]
+            new-queue (vec (rest queue))]
         (if (empty? r)
           (do
             ;todo: unassociate pc with images in cache
@@ -185,11 +194,19 @@
           (let [[provider _] (get providers free-src-i)
                 new-providers (assoc-in providers [free-src-i 1] (assoc pc :effective-range r))]
             (async/put! (:in provider) {:ranges (range->min-max-steps r)})
-            [cache new-queue new-providers])))
+            (maybe-advance-queue! cache new-queue new-providers))))
       [cache queue providers])
     [cache queue providers]))
 
-(defn make-frame-source [providers]
+(defn- split-interval- [m n split acc]
+  (if (> n (+ m split))
+    (split-interval- (+ m split) n split (conj acc [m (+ m split)]))
+    (conj acc [m n])))
+
+(defn split-interval [m n split]
+  (split-interval- m n split []))
+
+(defn make-frame-source [providers split]
   ; pull dispatching stuff out of tc-frame-provider and into here. returns :out mult :in chan map.
   ; the actual provider will also return an :out :in map but the out won't be multiplexed.
   (let [pouts (mapv :out providers)
@@ -207,53 +224,68 @@
           (if (= sin port)
             (let [msg val
                   {mtype :type} msg]
+              (println "got control message" msg)
               (case mtype
                 :request-frame (let [f (:frame msg)
                                      {:keys [image-data frame]} (get-best-standin cache f)
                                      outc (:standin-channel msg)]
+                                 (async/put! outc {:stand-in {:image-data image-data :frame frame}})
                                  (if (= f frame)
-                                   (do                      ;send standin and update birthday but not precache and leave pcid alone
-                                     (async/put! outc {:stand-in    {:image-data image-data :frame frame}
-                                                       :precache-id nil})
+                                   (do
+                                     #_(println "skip request for" f)
                                      (recur (cache-update-birthday cache f (now)) precache-id queue providers))
                                    (do                      ;send standin and precache with set ID and increment pcid
-                                     (async/put! outc {:stand-in    {:image-data image-data :frame frame}
-                                                       :precache-id precache-id})
-                                     (async/put! sin {:type        :precache-frames
-                                                      :range       [f f 1]
-                                                      :precache-id precache-id})
-                                     (recur cache (inc precache-id) queue providers))))
+                                     (async/put! sin {:type                :precache-frames
+                                                      :range               [f f 1]
+                                                      :precache-id-channel outc})
+                                     (recur cache precache-id queue providers))))
                 :precache-frames (let [[m n step] (:range msg)
-                                       pc {:range           [m n step]
-                                           :effective-range (range-make m n step)
-                                           :precache-id     (or (:precache-id msg) precache-id)}
-                                       new-queue (queue-push queue pc)
-                                       [new-cache pc] (cache-trim-precache cache pc)
+                                       intervals (split-interval m n split)
+                                       ids (range precache-id (+ precache-id (count intervals)))
+                                       pcs (map (fn [[m n] id]
+                                                  {:range           [m n step]
+                                                   :effective-range (range-make m n step)
+                                                   :precache-id     id})
+                                                intervals
+                                                ids)
+                                       ;_ (println "got pcs" pcs)
+                                       new-queue (reduce queue-push queue pcs)
+                                       [new-cache pcs] (reduce (fn [[cache pcs] pc]
+                                                                 (let [[cache pc] (cache-trim-precache cache pc)]
+                                                                   (if (empty? (:effective-range pc))
+                                                                     [cache pcs]
+                                                                     [cache (conj pcs pc)])))
+                                                               [cache []]
+                                                               pcs)
+                                       ;_ (println "second pcs" pcs)
                                        ; todo: remove this line once cache-trim-precache also associates pc with images
-                                       pc (assoc pc :effective-range (:range pc))
+                                       pcs (map #(assoc % :effective-range (range-make m n step)) pcs)
+                                       ;_ (println "final pcs" pcs)
+                                       ;_ (println "Q:" new-queue)
                                        ; todo: add calls to queue-trim and active-trim once pcs are associated with images
                                        ]
-                                   (if (empty? (:effective-range pc))
+                                   ;bounce along out channel all covered cache images
+                                   ;todo: do this much smarter!
+                                   (doseq [f (range-make m n step)]
+                                     (when-let [frame (cache-get-exact new-cache f)]
+                                       ; (println "rebounce" f)
+                                       (async/put! sout frame)))
+                                   (if (empty? pcs)
                                      (do
                                        (when-let [outc {:precache-id-channel msg}]
-                                         (async/put! outc {:precache-id nil}))
+                                         (async/put! outc {:precache-ids []}))
                                        (recur new-cache precache-id new-queue providers))
                                      (do
                                        (when-let [outc (:precache-id-channel msg)]
-                                         (async/put! outc {:precache-id precache-id}))
+                                         (async/put! outc {:precache-ids (map :precache-id pcs)}))
                                        (let [[new-cache new-queue new-providers] (maybe-advance-queue! new-cache
                                                                                                        new-queue
                                                                                                        providers)]
                                          (recur new-cache
-                                                ; try to avoid using the same precache-id twice
-                                                (if (number? (:precache-id pc))
-                                                  (inc (max (:precache-id pc) precache-id))
-                                                  precache-id)
+                                                (inc (last ids))
                                                 new-queue
                                                 new-providers)))))
-                :cancel-precache (let [pc-id (:precache-id msg)
-                                       pc-idx (u/findp #(= (:precache-id %) pc-id) queue)
-                                       pc (get queue pc-idx)]
+                :cancel-precache (let [pc-id (:precache-id msg)]
                                    ;todo: remove pc-id from images in cache
                                    ;todo: re-trim pcs of lower priority/higher idx than pc
                                    (recur cache precache-id (queue-drop-with-id queue pc-id) providers))))
@@ -272,6 +304,7 @@
                   new-cache (if (> (count new-cache) 100)   ; cache soft size limit
                               (trim-cache new-cache kill-date)
                               new-cache)]
+              #_(println "B broadcast" frame)
               (async/put! sout frame)
               (if (range-empty? range)
                 (let [[new-cache new-queue new-providers] (maybe-advance-queue! new-cache
@@ -290,10 +323,23 @@
         standin-resp (async/chan)]
     (async/tap (:out source) resp)
     (async/put! (:in source) {:type :request-frame :frame frame :standin-channel standin-resp})
-    (async/take! standin-resp
-                 (fn [{standin :stand-in pc-id :precache-id}]
-                   (async/close! standin-resp)
-                   (cb {:channel resp :stand-in standin :precache-id pc-id})))))
+    (async/take!
+      standin-resp
+      (fn [{standin :stand-in}]
+        (if (= (:frame standin) frame)
+          (do
+            (async/close! standin-resp)
+            (cb {:channel resp :stand-in standin :precache-id nil}))
+          (async/take!
+            standin-resp
+            (fn [{pc-ids :precache-ids}]
+              (async/close! standin-resp)
+              (cb {:channel resp :stand-in standin :precache-id (first pc-ids)}))))))))
+
+(defn precache [source m n step]
+  (let [resp (async/chan)]
+    (async/put! (:in source) {:type :precache-frames :range [m n step] :precache-id-channel resp})
+    resp))
 
 (defn cancel-precache [source pc-id]
   (when-not (nil? pc-id)

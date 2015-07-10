@@ -23,7 +23,8 @@
   (om/transact! (om/root-cursor app-state) [:__figwheel_counter] inc))
 
 (def test-duration 2000)
-(defonce app-state (atom {:source      (fp/make-frame-source [(fip/frame-image-provider test-duration)])
+(defonce app-state (atom {:source      (fp/make-frame-source [(fip/frame-image-provider test-duration)]
+                                                             1000)
                           :metadata    {}
                           :timeline    {:context        test-duration
                                         :source-context test-duration
@@ -295,13 +296,13 @@
                      :source (:source data)
                      :width  pw
                      :height h
-                     :attrs {:style (merge
-                                      {:position      :absolute
-                                       :top           16
-                                       :pointerEvents "none"}
-                                      (if is-last
-                                        {:right 8}
-                                        {:left frame-x}))}}))))))
+                     :attrs  {:style (merge
+                                       {:position      :absolute
+                                        :top           16
+                                        :pointerEvents "none"}
+                                       (if is-last
+                                         {:right 8}
+                                         {:left frame-x}))}}))))))
 
 (defn playback-controls [data _owner]
   (reify
@@ -470,7 +471,7 @@
                             :source (:source data)
                             :width  640
                             :height 480
-                            :attrs {:style {:marginLeft 80}}})
+                            :attrs  {:style {:marginLeft 80}}})
                  (om/build timeline
                            {:timeline (:timeline data)
                             :edits    (:edits data)

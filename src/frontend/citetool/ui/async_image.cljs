@@ -10,9 +10,10 @@
   (let [old-receipt (:receipt (om/get-state owner))
         old-pc-id (:precache-id (om/get-state owner))]
     (when old-receipt
+      (println "CANCEL" old-pc-id)
       ;cancel and close channel
       (fp/cancel-precache (:source data) old-pc-id)
-      (async/close! old-receipt))))
+      (async/put! old-receipt :cancel))))
 
 (defn- -update-async-image! [data owner]
   (-cancel-pending-request! data owner)
@@ -24,30 +25,36 @@
                             :frame       (:frame standin)
                             :precache-id pc-id
                             :receipt     receipt})
-      (async-m/go-loop []
-                       (let [received-data (async/<! receipt)
-                             standin-frame (:frame (om/get-state owner))
-                             target-frame (:now data)]
-                         (when-let [{frame :frame image-data :image-data} received-data]
-                           (println "received" frame)
-                           (cond
-                             (= frame target-frame) (do
-                                                      (println "got frame" frame)
-                                                      (om/set-state! owner {:image-data  image-data
-                                                                            :frame       frame
-                                                                            :precache-id nil
-                                                                            :receipt     nil})
-                                                      (async/close! receipt))
-                             (u/closer? frame target-frame standin-frame) (do
-                                                                            (println "updating standin from" standin-frame
-                                                                                     "to" frame
-                                                                                     "target" target-frame)
-                                                                            (om/set-state! owner {:image-data  image-data
-                                                                                                  :frame       frame
-                                                                                                  :precache-id pc-id
-                                                                                                  :receipt     receipt})
-                                                                            (recur))
-                             true (recur))))))))
+      (let [standin-frame (:frame (om/get-state owner))
+            target-frame (:now data)]
+        (async-m/go-loop []
+                         (let [received-data (async/<! receipt)]
+                           (if (or (= received-data :cancel)
+                                   (not= receipt (:receipt (om/get-state owner)))
+                                   (not= target-frame (:now (om/get-props owner))))
+                             (async/close! receipt)
+                             (if-let [{frame :frame image-data :image-data} received-data]
+                               (do
+                                 (println "received" frame)
+                                 (cond
+                                   (= frame target-frame) (do
+                                                            (println "got frame" frame)
+                                                            (om/set-state! owner {:image-data  image-data
+                                                                                  :frame       frame
+                                                                                  :precache-id nil
+                                                                                  :receipt     receipt})
+                                                            (async/close! receipt))
+                                   (u/closer? frame target-frame standin-frame) (do
+                                                                                  (println "updating standin from" standin-frame
+                                                                                           "to" frame
+                                                                                           "target" target-frame)
+                                                                                  (om/set-state! owner {:image-data  image-data
+                                                                                                        :frame       frame
+                                                                                                        :precache-id pc-id
+                                                                                                        :receipt     receipt})
+                                                                                  (recur))
+                                   true (recur)))
+                               (recur)))))))))
 
 (defn async-image [data owner]
   (reify
