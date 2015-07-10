@@ -22,17 +22,18 @@
 (defn on-js-reload []
   (om/transact! (om/root-cursor app-state) [:__figwheel_counter] inc))
 
-(defonce app-state (atom {:source      (fp/make-frame-source [(fip/frame-image-provider 200)])
+(def test-duration 2000)
+(defonce app-state (atom {:source      (fp/make-frame-source [(fip/frame-image-provider test-duration)])
                           :metadata    {}
-                          :timeline    {:context        200
-                                        :source-context 200
-                                        :target-context 200
+                          :timeline    {:context        test-duration
+                                        :source-context test-duration
+                                        :target-context test-duration
                                         :scroll-x       0
                                         :now            0
                                         :scroll-width   800}
                           :annotations []
                           :edits       []
-                          :duration    200}))
+                          :duration    test-duration}))
 
 (def tick-proximity-max 16)
 (defn max-tick-count [visible-width] (u/floor (/ visible-width tick-proximity-max)))

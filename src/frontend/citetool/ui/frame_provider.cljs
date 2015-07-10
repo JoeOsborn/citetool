@@ -116,34 +116,6 @@
                l
                r)))))
 
-(defn trim-cache [cache kill-date]
-  ;todo: also only filter ones without active precaches
-  (filterv #(>= (:birthday %) kill-date) cache))
-
-(defn maybe-advance-queue! [cache queue providers]
-  (if-let [pc (first queue)]
-    (if-let [free-src-i (u/findp #(= (second %) nil) providers)]
-      (let [r (reduce (fn [r1 r2] (if (empty? r1) (reduced r1) (range- r1 r2)))
-                      (:effective-range pc)
-                      (map #(range-make-single (:frame %)) cache))
-            new-queue (rest queue)]
-        (if (empty? r)
-          (do
-            ;todo: unassociate pc with images in cache
-            (maybe-advance-queue! cache new-queue providers))
-          (let [;todo: update birthdays and associate images with pc
-                [provider _] (get providers free-src-i)
-                new-providers (assoc-in providers [free-src-i 1] (assoc pc :effective-range r))]
-            (async/put! (:in provider) {:ranges (range->min-max-steps r)})
-            [cache new-queue new-providers])))
-      [cache queue providers])
-    [cache queue providers]))
-
-(defn queue-drop-with-id [queue pc-id]
-  (filterv #(not= (:precache-id %) pc-id) queue))
-
-(defn queue-push [queue pc] (conj queue pc))
-
 (defn cache-update-birthday [cache f date]
   (let [idx (sorted-index-of cache f)
         frame (get cache idx)
@@ -152,6 +124,70 @@
       (assoc-in cache [idx :birthday] date)
       ; if not present, leave cache alone
       cache)))
+
+(defn trim-cache [cache kill-date]
+  ;todo: also only filter ones without active precaches
+  (filterv #(>= (:birthday %) kill-date) cache))
+
+(defn cache-trim-precache [cache pc]
+  (let [now (now)
+        ;todo: associate images with pc
+        [cache r] (reduce (fn [[cache r1] ci]
+                            (if (empty? r1)
+                              (reduced [cache r1])
+                              (let [r2 (range-make-single (:frame (get cache ci)))
+                                    new-r1 (range- r1 r2)]
+                                (if (not= r1 new-r1)
+                                  [(assoc-in cache [ci :birthday] now) new-r1]
+                                  [cache new-r1]))))
+                          [cache (:effective-range pc)]
+                          (range 0 (count cache)))]
+    [cache (assoc pc :effective-range r)]))
+
+(defn actives-trim-precache [providers pc]
+  (let [actives (filter #(not (nil? %)) (map second providers))
+        r (reduce (fn [r1 r2]
+                    (if (empty? r1)
+                      (reduced r1)
+                      (range- r1 r2)))
+                  (:effective-range pc)
+                  (map :range actives))]
+    (assoc pc :effective-range r)))
+
+(defn queue-drop-with-id [queue pc-id]
+  (filterv #(not= (:precache-id %) pc-id) queue))
+
+(def queue-push conj)
+
+#_(def queue-split split-at)
+
+#_(defn queue-trim-precache [queue pc index]
+  (let [[queue _ignore] (queue-split queue index)
+        r (reduce (fn [r1 r2]
+                    (if (empty? r1)
+                      (reduced r1)
+                      (range- r1 r2)))
+                  (:effective-range pc)
+                  (map :range queue))]
+    (assoc pc :effective-range r)))
+
+(defn maybe-advance-queue! [cache queue providers]
+  (if-let [pc (first queue)]
+    (if-let [free-src-i (u/findp #(= (second %) nil) providers)]
+      (let [[cache pc] (cache-trim-precache cache pc)
+            pc (actives-trim-precache providers pc)
+            r (:effective-range pc)
+            new-queue (rest queue)]
+        (if (empty? r)
+          (do
+            ;todo: unassociate pc with images in cache
+            (maybe-advance-queue! cache new-queue providers))
+          (let [[provider _] (get providers free-src-i)
+                new-providers (assoc-in providers [free-src-i 1] (assoc pc :effective-range r))]
+            (async/put! (:in provider) {:ranges (range->min-max-steps r)})
+            [cache new-queue new-providers])))
+      [cache queue providers])
+    [cache queue providers]))
 
 (defn make-frame-source [providers]
   ; pull dispatching stuff out of tc-frame-provider and into here. returns :out mult :in chan map.
@@ -177,11 +213,11 @@
                                      outc (:standin-channel msg)]
                                  (if (= f frame)
                                    (do                      ;send standin and update birthday but not precache and leave pcid alone
-                                     (async/put! outc {:stand-in {:image-data image-data :frame frame}
+                                     (async/put! outc {:stand-in    {:image-data image-data :frame frame}
                                                        :precache-id nil})
                                      (recur (cache-update-birthday cache f (now)) precache-id queue providers))
                                    (do                      ;send standin and precache with set ID and increment pcid
-                                     (async/put! outc {:stand-in {:image-data image-data :frame frame}
+                                     (async/put! outc {:stand-in    {:image-data image-data :frame frame}
                                                        :precache-id precache-id})
                                      (async/put! sin {:type        :precache-frames
                                                       :range       [f f 1]
@@ -191,22 +227,33 @@
                                        pc {:range           [m n step]
                                            :effective-range (range-make m n step)
                                            :precache-id     (or (:precache-id msg) precache-id)}
-                                       new-queue (queue-push queue pc)]
-                                   ;todo: add pc to images in cache
-                                   ;todo: trim pc by cache, providers, higher-priority elements of queue
-                                   ;todo: if this leaves pc empty, just drop it and update birthdays
-                                   (when-let [outc (:precache-id-channel msg)]
-                                     (async/put! outc {:precache-id precache-id}))
-                                   (let [[new-cache new-queue new-providers] (maybe-advance-queue! cache new-queue providers)]
-                                     (recur new-cache
-                                            ; try to avoid using the same precache-id twice
-                                            (if (number? (:precache-id pc))
-                                              (inc (max (:precache-id pc) precache-id))
-                                              precache-id)
-                                            new-queue
-                                            new-providers)))
+                                       new-queue (queue-push queue pc)
+                                       [new-cache pc] (cache-trim-precache cache pc)
+                                       ; todo: remove this line once cache-trim-precache also associates pc with images
+                                       pc (assoc pc :effective-range (:range pc))
+                                       ; todo: add calls to queue-trim and active-trim once pcs are associated with images
+                                       ]
+                                   (if (empty? (:effective-range pc))
+                                     (do
+                                       (when-let [outc {:precache-id-channel msg}]
+                                         (async/put! outc {:precache-id nil}))
+                                       (recur new-cache precache-id new-queue providers))
+                                     (do
+                                       (when-let [outc (:precache-id-channel msg)]
+                                         (async/put! outc {:precache-id precache-id}))
+                                       (let [[new-cache new-queue new-providers] (maybe-advance-queue! new-cache
+                                                                                                       new-queue
+                                                                                                       providers)]
+                                         (recur new-cache
+                                                ; try to avoid using the same precache-id twice
+                                                (if (number? (:precache-id pc))
+                                                  (inc (max (:precache-id pc) precache-id))
+                                                  precache-id)
+                                                new-queue
+                                                new-providers)))))
                 :cancel-precache (let [pc-id (:precache-id msg)
-                                       pc-idx (u/findp #(= (:precache-id %) pc-id) queue)]
+                                       pc-idx (u/findp #(= (:precache-id %) pc-id) queue)
+                                       pc (get queue pc-idx)]
                                    ;todo: remove pc-id from images in cache
                                    ;todo: re-trim pcs of lower priority/higher idx than pc
                                    (recur cache precache-id (queue-drop-with-id queue pc-id) providers))))
@@ -217,8 +264,8 @@
                   [prov src-pc] (get providers prov-i)
                   range (range- (:effective-range src-pc) (range-make-single (:frame frame)))
                   new-pc (assoc src-pc :effective-range range)
-                  ;todo: associate with images in cache
-                  pc-id (:precache-id src-pc)
+                  new-providers providers
+                  new-queue queue
                   kill-date (- now 10000)                   ; cache hard time limit
                   frame (assoc frame :birthday now)
                   new-cache (sorted-insert cache frame)
@@ -227,8 +274,9 @@
                               new-cache)]
               (async/put! sout frame)
               (if (range-empty? range)
-                (let [[new-cache new-queue new-providers] (maybe-advance-queue! new-cache queue (assoc providers prov-i [prov nil]))]
-                  ;todo: remove pc from images in cache
+                (let [[new-cache new-queue new-providers] (maybe-advance-queue! new-cache
+                                                                                new-queue
+                                                                                (assoc new-providers prov-i [prov nil]))]
                   (recur new-cache precache-id new-queue new-providers))
                 (recur new-cache
                        precache-id
