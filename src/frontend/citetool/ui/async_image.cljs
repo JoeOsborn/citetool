@@ -23,7 +23,7 @@
                 [received-data chan] (async/alts! [control-chan frame-chan])
                 cur-target (:now (om/get-props owner))
                 cur-frame (:frame (om/get-state owner))]
-            (println received-data "prev target" prev-target "cur target" cur-target "cf" cur-frame)
+            #_(println received-data "prev target" prev-target "cur target" cur-target "cf" cur-frame)
             (cond
               (= chan control-chan) (case received-data
                                       :stop
@@ -64,14 +64,12 @@
         {:image-data nil :frame nil :control control-chan}))
     om/IWillMount
     (will-mount [_]
-      (println "MOUNT make query for " (:now data))
       (-update-async-image! owner))
     om/IWillUnmount
     (will-unmount [_]
       (async/put! (:control (om/get-state owner)) :stop))
     om/IDidUpdate
     (did-update [_ p-p _]
-      (println "prev props" p-p)
       (-update-async-image! owner))
     om/IRenderState
     (render-state [_ {image-data :image-data}]
