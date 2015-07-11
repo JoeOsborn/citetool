@@ -1,4 +1,15 @@
-(ns ^:figwheel-always citetool.ui.util)
+(ns citetool.ui.util)
+
+(defn now [] (.now js/Date))
+
+#_(defn multiple-of? [n divisor]
+  (= 0 (mod n divisor)))
+
+#_(defn nearest-above [num divisor remainder]
+  (next-or-eq-item num (map #(+ remainder %) (multiples divisor))))
+
+#_(defn nearest-below [num divisor remainder]
+  (prev-or-eq-item num (map #(+ remainder %) (multiples divisor))))
 
 (defn page-x->element-x [x elt]
   (+ x (.-scrollLeft elt)))
@@ -6,6 +17,7 @@
 (defn abs [a] (.abs js/Math a))
 
 (defn floor [a] (.floor js/Math a))
+(defn ceil [a] (.ceil js/Math a))
 
 (defn clip [lo x hi]
   (min hi (max lo x)))

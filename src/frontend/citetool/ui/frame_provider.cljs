@@ -4,16 +4,6 @@
             [clojure.set :as s])
   (:require-macros [cljs.core.async.macros :as async-m]))
 
-(defn now [] (.now js/Date))
-
-(defn multiple-of? [n divisor]
-  (= 0 (mod n divisor)))
-
-(defn nearest-above [num divisor remainder]
-  (u/next-or-eq-item num (map #(+ remainder %) (u/multiples divisor))))
-
-(defn nearest-below [num divisor remainder]
-  (u/prev-or-eq-item num (map #(+ remainder %) (u/multiples divisor))))
 
 (defn range-make [m n step]
   (into (sorted-set) (range m (inc n) step)))
@@ -139,7 +129,7 @@
 ;todo: probably better to go through pc's range and find cache entries.
 ; or at least only go from first-found-entry-index to last-found-entry-index
 (defn cache-trim-precache [cache pc]
-  (let [now (now)
+  (let [now (u/now)
         ;todo: associate images with pc
         [cache r] (reduce (fn [[cache r1] ci]
                             (if (empty? r1)
@@ -233,7 +223,7 @@
                                  (if (= f frame)
                                    (do
                                      #_(println "skip request for" f)
-                                     (recur (cache-update-birthday cache f (now)) precache-id queue providers))
+                                     (recur (cache-update-birthday cache f (u/now)) precache-id queue providers))
                                    (do                      ;send standin and precache with set ID and increment pcid
                                      (async/put! sin {:type                :precache-frames
                                                       :range               [f f 1]
@@ -272,7 +262,7 @@
                                        (async/put! sout frame)))
                                    (if (empty? pcs)
                                      (do
-                                       (when-let [outc {:precache-id-channel msg}]
+                                       (when-let [outc (:precache-id-channel msg)]
                                          (async/put! outc {:precache-ids []}))
                                        (recur new-cache precache-id new-queue providers))
                                      (do
@@ -291,7 +281,7 @@
                                    (recur cache precache-id (queue-drop-with-id queue pc-id) providers))))
             ;must be a provider
             (let [frame val pout port
-                  now (now)
+                  now (u/now)
                   prov-i (u/findp #(= pout %) pouts)
                   [prov src-pc] (get providers prov-i)
                   range (range- (:effective-range src-pc) (range-make-single (:frame frame)))
@@ -304,7 +294,7 @@
                   new-cache (if (> (count new-cache) 100)   ; cache soft size limit
                               (trim-cache new-cache kill-date)
                               new-cache)]
-              #_(println "B broadcast" frame)
+              (println "B broadcast" frame)
               (async/put! sout frame)
               (if (range-empty? range)
                 (let [[new-cache new-queue new-providers] (maybe-advance-queue! new-cache
@@ -318,23 +308,26 @@
     {:out (async/mult sout) :in sin}))
 
 ; Source should be an {:out mult :in chan} map
-(defn request-frame [source frame cb]
-  (let [resp (async/chan)
-        standin-resp (async/chan)]
+(defn frame-broadcast-channel [source]
+  (let [resp (async/chan)]
     (async/tap (:out source) resp)
-    (async/put! (:in source) {:type :request-frame :frame frame :standin-channel standin-resp})
-    (async/take!
-      standin-resp
-      (fn [{standin :stand-in}]
+    resp))
+
+(defn request-frame-chan [source frame]
+  (let [standin-resp (async/chan)
+        req-chan (async/chan)]
+    (async-m/go
+      (async/>! (:in source) {:type :request-frame :frame frame :standin-channel standin-resp})
+      (let [{standin :stand-in} (async/<! standin-resp)]
         (if (= (:frame standin) frame)
+          (async/>! req-chan {:stand-in standin})
           (do
-            (async/close! standin-resp)
-            (cb {:channel resp :stand-in standin :precache-id nil}))
-          (async/take!
-            standin-resp
-            (fn [{pc-ids :precache-ids}]
-              (async/close! standin-resp)
-              (cb {:channel resp :stand-in standin :precache-id (first pc-ids)}))))))))
+            (if-let [{[pc-id] :precache-ids} (async/<! standin-resp)]
+              (async/>! req-chan {:stand-in standin :precache-id pc-id})
+              :true))))
+      (async/close! standin-resp)
+      (async/close! req-chan))
+    req-chan))
 
 (defn precache [source m n step]
   (let [resp (async/chan)]

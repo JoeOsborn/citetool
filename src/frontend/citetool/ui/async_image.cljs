@@ -6,74 +6,73 @@
             [citetool.ui.frame-provider :as fp])
   (:require-macros [cljs.core.async.macros :as async-m]))
 
-(defn -cancel-pending-request! [data owner]
-  (let [old-receipt (:receipt (om/get-state owner))
-        old-pc-id (:precache-id (om/get-state owner))]
-    (when old-receipt
-      (println "CANCEL" old-pc-id)
-      ;cancel and close channel
-      (fp/cancel-precache (:source data) old-pc-id)
-      (async/put! old-receipt :cancel))))
-
-(defn- -update-async-image! [data owner]
-  (-cancel-pending-request! data owner)
-  (fp/request-frame
-    (:source data) (:now data)
-    (fn [{receipt :channel standin :stand-in pc-id :precache-id}]
-      (println "in callback with" (:frame standin) pc-id)
-      (om/set-state! owner {:image-data  (:image-data standin)
-                            :frame       (:frame standin)
-                            :precache-id pc-id
-                            :receipt     receipt})
-      (let [standin-frame (:frame (om/get-state owner))
-            target-frame (:now data)]
-        (async-m/go-loop []
-                         (let [received-data (async/<! receipt)]
-                           (if (or (= received-data :cancel)
-                                   (not= receipt (:receipt (om/get-state owner)))
-                                   (not= target-frame (:now (om/get-props owner))))
-                             (async/close! receipt)
-                             (if-let [{frame :frame image-data :image-data} received-data]
-                               (do
-                                 (println "received" frame)
-                                 (cond
-                                   (= frame target-frame) (do
-                                                            (println "got frame" frame)
-                                                            (om/set-state! owner {:image-data  image-data
-                                                                                  :frame       frame
-                                                                                  :precache-id nil
-                                                                                  :receipt     receipt})
-                                                            (async/close! receipt))
-                                   (u/closer? frame target-frame standin-frame) (do
-                                                                                  (println "updating standin from" standin-frame
-                                                                                           "to" frame
-                                                                                           "target" target-frame)
-                                                                                  (om/set-state! owner {:image-data  image-data
-                                                                                                        :frame       frame
-                                                                                                        :precache-id pc-id
-                                                                                                        :receipt     receipt})
-                                                                                  (recur))
-                                   true (recur)))
-                               (recur)))))))))
+(defn- -update-async-image! [owner]
+  (async/put! (:control (om/get-state owner)) :changed))
 
 (defn async-image [data owner]
   (reify
     om/IInitState
     (init-state [_]
-      {:image-data nil :frame nil :receipt nil})
+      (let [source (:source data)
+            frame-chan (fp/frame-broadcast-channel source)
+            control-chan (async/chan)]
+        (async-m/go-loop
+          [pc-id nil]
+          (let [pc-id pc-id                                 ;silence intellij warnings
+                prev-target (:now (om/get-props owner))
+                [received-data chan] (async/alts! [control-chan frame-chan])
+                cur-target (:now (om/get-props owner))
+                cur-frame (:frame (om/get-state owner))]
+            (println received-data "prev target" prev-target "cur target" cur-target "cf" cur-frame)
+            (cond
+              (= chan control-chan) (case received-data
+                                      :stop
+                                      (do
+                                        (when pc-id (fp/cancel-precache source pc-id))
+                                        (async/close! control-chan)
+                                        (async/close! frame-chan))
+                                      :changed
+                                      (if (and (= cur-target prev-target)
+                                               (not= cur-frame nil))
+                                        (recur pc-id)
+                                        (let [response-chan (fp/request-frame-chan source cur-target)
+                                              {stand-in :stand-in new-pc-id :precache-id} (async/<! response-chan)
+                                              {image-data :image-data frame :frame} stand-in]
+                                          (async/close! response-chan)
+                                          (om/set-state! owner {:image-data image-data :frame frame :control control-chan})
+                                          (when pc-id (fp/cancel-precache source pc-id))
+                                          (recur new-pc-id))))
+              (= cur-target cur-frame) (recur pc-id)
+              (= chan frame-chan) (if-let [{frame :frame image-data :image-data} received-data]
+                                    (cond
+                                      (= frame cur-target) (do
+                                                             (println "got frame" frame)
+                                                             (om/set-state! owner {:image-data image-data
+                                                                                   :frame      frame
+                                                                                   :control    control-chan})
+                                                             (recur nil))
+                                      (u/closer? frame cur-target cur-frame) (do
+                                                                               (println "updating standin from" cur-frame
+                                                                                        "to" frame
+                                                                                        "target" cur-target)
+                                                                               (om/set-state! owner {:image-data image-data
+                                                                                                     :frame      frame
+                                                                                                     :control    control-chan})
+                                                                               (recur pc-id))
+                                      true (recur pc-id))
+                                    (recur pc-id)))))
+        {:image-data nil :frame nil :control control-chan}))
     om/IWillMount
     (will-mount [_]
       (println "MOUNT make query for " (:now data))
-      (-update-async-image! data owner))
+      (-update-async-image! owner))
     om/IWillUnmount
     (will-unmount [_]
-      (-cancel-pending-request! data owner))
-    om/IWillReceiveProps
-    (will-receive-props [_ new-props]
-      (when (or (not= (:now new-props) (:now (om/get-props owner)))
-                (not= (:source new-props) (:source (om/get-props owner))))
-        (println "RECV make query for" (:now new-props) "vs" (:now (om/get-props owner)))
-        (-update-async-image! new-props owner)))
+      (async/put! (:control (om/get-state owner)) :stop))
+    om/IDidUpdate
+    (did-update [_ p-p _]
+      (println "prev props" p-p)
+      (-update-async-image! owner))
     om/IRenderState
     (render-state [_ {image-data :image-data}]
       (dom/img (clj->js (merge {:src image-data :width (:width data) :height (:height data)}

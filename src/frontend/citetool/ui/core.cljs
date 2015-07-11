@@ -23,7 +23,10 @@
   (om/transact! (om/root-cursor app-state) [:__figwheel_counter] inc))
 
 (def test-duration 2000)
-(defonce app-state (atom {:source      (fp/make-frame-source [(fip/frame-image-provider test-duration)]
+(defonce app-state (atom {:source      (fp/make-frame-source [(fip/frame-image-provider test-duration)
+                                                              (fip/frame-image-provider test-duration)
+                                                              (fip/frame-image-provider test-duration)
+                                                              (fip/frame-image-provider test-duration)]
                                                              1000)
                           :metadata    {}
                           :timeline    {:context        test-duration
@@ -286,7 +289,8 @@
       (let [frame (:frame data)
             duration (:duration data)
             pw (:preview-width data)
-            frame-x (+ 6 (u/frame-offset-x frame w (:context data)))
+            frame-x (u/frame-offset-x frame w (:context data))
+            frame-x (+ 6 frame-x)
             skip (:skip data)
             is-last (= frame (dec duration))]
         (when-not skip
@@ -390,7 +394,7 @@
                                      tick-frames))
             preview-height (- h 24)
             preview-width (* (/ 4 3) preview-height)
-            preview-width-in-frames (u/pixels->frames preview-width w context)
+            preview-width-in-frames (u/floor (u/pixels->frames preview-width w context))
             preview-frames (u/frame-skipped-frames (u/floor preview-width-in-frames)
                                                    w
                                                    context
@@ -421,7 +425,7 @@
                                       preview-frame-data)
                                  preview-frame-data)
             tick-opts {:opts {:width w :height h} :key :frame}
-            preview-opts {:opts {:width w :height preview-height} :key :frame}]
+            preview-opts {:opts {:width w :height preview-height}}]
         (dom/div
           (clj->js {:style   {:overflowX "hidden"
                               :overflowY "none"
