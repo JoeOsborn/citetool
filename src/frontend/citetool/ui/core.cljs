@@ -300,6 +300,7 @@
                      :source (:source data)
                      :width  pw
                      :height h
+                     :priority 2
                      :attrs  {:style (merge
                                        {:position      :absolute
                                         :top           16
@@ -365,6 +366,7 @@
       (scroll-to! (.-scrollLeft (om/get-node owner))))
     om/IDidUpdate
     (did-update [_ _ _]
+      ;this is too late to precache/cancel precache requests! use IWillReceiveProps instead
       ;(precache! (get-in (om/get-props owner) [:source]) min max step)
       (set! (.-scrollLeft (om/get-node owner)) (get-in (om/get-props owner) [:timeline :scroll-x])))
     om/IRender
@@ -473,6 +475,7 @@
                  (om/build async-image/async-image
                            {:now    (get-in data [:timeline :now])
                             :source (:source data)
+                            :priority 0
                             :width  640
                             :height 480
                             :attrs  {:style {:marginLeft 80}}})

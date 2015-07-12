@@ -22,6 +22,7 @@
                 prev-target (:now (om/get-props owner))
                 [received-data chan] (async/alts! [control-chan frame-chan])
                 cur-target (:now (om/get-props owner))
+                priority (:priority (om/get-props owner))
                 cur-frame (:frame (om/get-state owner))]
             #_(println received-data "prev target" prev-target "cur target" cur-target "cf" cur-frame)
             (cond
@@ -35,7 +36,7 @@
                                       (if (and (= cur-target prev-target)
                                                (not= cur-frame nil))
                                         (recur pc-id)
-                                        (let [response-chan (fp/request-frame-chan source cur-target)
+                                        (let [response-chan (fp/request-frame-chan source cur-target priority)
                                               {stand-in :stand-in new-pc-id :precache-id} (async/<! response-chan)
                                               {image-data :image-data frame :frame} stand-in]
                                           (async/close! response-chan)
@@ -69,7 +70,7 @@
     (will-unmount [_]
       (async/put! (:control (om/get-state owner)) :stop))
     om/IDidUpdate
-    (did-update [_ p-p _]
+    (did-update [_ _p-p _]
       (-update-async-image! owner))
     om/IRenderState
     (render-state [_ {image-data :image-data}]

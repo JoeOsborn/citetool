@@ -26,7 +26,7 @@
 (defn frame-image-provider [duration]
   (let [requests (async/chan)
         responses (async/chan)
-        fake-ms-per-frame 1]
+        fake-ms-per-frame 16]
     (async-m/go-loop
       [last-frame 0]
       (let [request (async/<! requests)]

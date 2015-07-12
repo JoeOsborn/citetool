@@ -153,10 +153,19 @@
                   (map :range actives))]
     (assoc pc :effective-range r)))
 
+(def queue-make (partial sorted-set-by #(compare (:priority %1) (:priority %2))))
+
 (defn queue-drop-with-id [queue pc-id]
-  (filterv #(not= (:precache-id %) pc-id) queue))
+  (if-let [found-precache (u/memberp #(= (:precache-id %) pc-id) queue)]
+    (disj queue found-precache)
+    queue))
 
 (def queue-push conj)
+
+(def queue-first first)
+
+(defn queue-pop [queue]
+  (disj queue (queue-first queue)))
 
 #_(def queue-split split-at)
 
@@ -171,21 +180,24 @@
     (assoc pc :effective-range r)))
 
 (defn maybe-advance-queue! [cache queue providers]
-  (if-let [pc (first queue)]
-    (if-let [free-src-i (u/findp #(= (second %) nil) providers)]
-      (let [[cache pc] (cache-trim-precache cache pc)
-            pc (actives-trim-precache providers pc)
-            r (:effective-range pc)
-            new-queue (vec (rest queue))]
-        (if (empty? r)
-          (do
-            ;todo: unassociate pc with images in cache
-            (maybe-advance-queue! cache new-queue providers))
-          (let [[provider _] (get providers free-src-i)
-                new-providers (assoc-in providers [free-src-i 1] (assoc pc :effective-range r))]
-            (async/put! (:in provider) {:ranges (range->min-max-steps r)})
-            (maybe-advance-queue! cache new-queue new-providers))))
-      [cache queue providers])
+  (if-let [pc (queue-first queue)]
+    (let [usable-providers (if (= (:priority pc) 0)
+                             providers
+                             (assoc-in providers [0 1] :reserved))]
+      (if-let [free-src-i (u/findp #(= (second %) nil) usable-providers)]
+        (let [[cache pc] (cache-trim-precache cache pc)
+              pc (actives-trim-precache providers pc)
+              r (:effective-range pc)
+              new-queue (queue-pop queue)]
+          (if (empty? r)
+            (do
+              ;todo: unassociate pc with images in cache
+              (maybe-advance-queue! cache new-queue providers))
+            (let [[provider _] (get providers free-src-i)
+                  new-providers (assoc-in providers [free-src-i 1] (assoc pc :effective-range r))]
+              (async/put! (:in provider) {:ranges (range->min-max-steps r)})
+              (maybe-advance-queue! cache new-queue new-providers))))
+        [cache queue providers]))
     [cache queue providers]))
 
 (defn- split-interval- [m n split acc]
@@ -207,7 +219,7 @@
       ;todo: use some avl tree or sorted vec or sorted JS array or something for speed.
       [cache (vector)
        precache-id 0
-       queue (vector)
+       queue (queue-make)
        providers (mapv (fn [p] [p nil]) providers)]
       (let [cache cache providers providers precache-id precache-id queue queue] ;silence IntelliJ warnings
         (let [[val port] (async/alts! channels)]
@@ -217,6 +229,7 @@
               (println "got control message" msg)
               (case mtype
                 :request-frame (let [f (:frame msg)
+                                     p (:priority msg)
                                      {:keys [image-data frame]} (get-best-standin cache f)
                                      outc (:standin-channel msg)]
                                  (async/put! outc {:stand-in {:image-data image-data :frame frame}})
@@ -227,18 +240,20 @@
                                    (do                      ;send standin and precache with set ID and increment pcid
                                      (async/put! sin {:type                :precache-frames
                                                       :range               [f f 1]
+                                                      :priority            p
                                                       :precache-id-channel outc})
                                      (recur cache precache-id queue providers))))
                 :precache-frames (let [[m n step] (:range msg)
+                                       p (:priority msg)
                                        intervals (split-interval m n split)
                                        ids (range precache-id (+ precache-id (count intervals)))
                                        pcs (map (fn [[m n] id]
                                                   {:range           [m n step]
                                                    :effective-range (range-make m n step)
+                                                   :priority        p
                                                    :precache-id     id})
                                                 intervals
                                                 ids)
-                                       ;_ (println "got pcs" pcs)
                                        new-queue (reduce queue-push queue pcs)
                                        [new-cache pcs] (reduce (fn [[cache pcs] pc]
                                                                  (let [[cache pc] (cache-trim-precache cache pc)]
@@ -247,11 +262,8 @@
                                                                      [cache (conj pcs pc)])))
                                                                [cache []]
                                                                pcs)
-                                       ;_ (println "second pcs" pcs)
                                        ; todo: remove this line once cache-trim-precache also associates pc with images
                                        pcs (map #(assoc % :effective-range (range-make m n step)) pcs)
-                                       ;_ (println "final pcs" pcs)
-                                       ;_ (println "Q:" new-queue)
                                        ; todo: add calls to queue-trim and active-trim once pcs are associated with images
                                        ]
                                    ;bounce along out channel all covered cache images
@@ -313,11 +325,14 @@
     (async/tap (:out source) resp)
     resp))
 
-(defn request-frame-chan [source frame]
+(defn request-frame-chan [source frame priority]
   (let [standin-resp (async/chan)
         req-chan (async/chan)]
     (async-m/go
-      (async/>! (:in source) {:type :request-frame :frame frame :standin-channel standin-resp})
+      (async/>! (:in source) {:type :request-frame
+                              :frame frame
+                              :priority priority
+                              :standin-channel standin-resp})
       (let [{standin :stand-in} (async/<! standin-resp)]
         (if (= (:frame standin) frame)
           (async/>! req-chan {:stand-in standin})
@@ -329,9 +344,12 @@
       (async/close! req-chan))
     req-chan))
 
-(defn precache [source m n step]
+(defn precache [source m n step p]
   (let [resp (async/chan)]
-    (async/put! (:in source) {:type :precache-frames :range [m n step] :precache-id-channel resp})
+    (async/put! (:in source) {:type :precache-frames
+                              :range [m n step]
+                              :priority p
+                              :precache-id-channel resp})
     resp))
 
 (defn cancel-precache [source pc-id]

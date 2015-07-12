@@ -71,6 +71,9 @@
       idx
       nil)))
 
+(defn memberp [pred coll]
+  (first (filter pred coll)))
+
 ; max-time determines how unit padding happens.
 ; if it's <0, units will always be padded out to hours.
 ; if it's 0, units will never be padded.
