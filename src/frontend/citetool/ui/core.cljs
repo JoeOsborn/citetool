@@ -20,7 +20,9 @@
   :jsload-callback on-js-reload)
 
 (defn on-js-reload []
-  (om/transact! (om/root-cursor app-state) [:__figwheel_counter] inc))
+  (om/transact! (om/root-cursor app-state) [:__figwheel_counter] inc)
+  ;todo: set scrollLeft of timeline correctly. figwheel reloads mess it up?
+  )
 
 (def test-duration 2000)
 (defonce app-state (atom {:source      (fp/make-frame-source [(fip/frame-image-provider test-duration)
@@ -296,18 +298,18 @@
         (when-not skip
           (println "f" frame "ox" frame-x)
           (om/build async-image/async-image
-                    {:now    frame
-                     :source (:source data)
-                     :width  pw
-                     :height h
-                     :priority 2
-                     :attrs  {:style (merge
-                                       {:position      :absolute
-                                        :top           16
-                                        :pointerEvents "none"}
-                                       (if is-last
-                                         {:right 8}
-                                         {:left frame-x}))}}))))))
+                    {:now      frame
+                     :source   (:source data)
+                     :width    pw
+                     :height   h
+                     :priority 8
+                     :attrs    {:style (merge
+                                         {:position      :absolute
+                                          :top           16
+                                          :pointerEvents "none"}
+                                         (if is-last
+                                           {:right 8}
+                                           {:left frame-x}))}}))))))
 
 (defn playback-controls [data _owner]
   (reify
@@ -473,12 +475,12 @@
       (render [_]
         (dom/div (clj->js {})
                  (om/build async-image/async-image
-                           {:now    (get-in data [:timeline :now])
-                            :source (:source data)
-                            :priority 0
-                            :width  640
-                            :height 480
-                            :attrs  {:style {:marginLeft 80}}})
+                           {:now      (get-in data [:timeline :now])
+                            :source   (:source data)
+                            :priority 10
+                            :width    640
+                            :height   480
+                            :attrs    {:style {:marginLeft 80}}})
                  (om/build timeline
                            {:timeline (:timeline data)
                             :edits    (:edits data)

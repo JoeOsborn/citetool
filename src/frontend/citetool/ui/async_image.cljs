@@ -24,25 +24,30 @@
                 cur-target (:now (om/get-props owner))
                 priority (:priority (om/get-props owner))
                 cur-frame (:frame (om/get-state owner))]
-            #_(println received-data "prev target" prev-target "cur target" cur-target "cf" cur-frame)
+            (println received-data "prev target" prev-target "cur target" cur-target "cf" cur-frame)
             (cond
-              (= chan control-chan) (case received-data
-                                      :stop
-                                      (do
-                                        (when pc-id (fp/cancel-precache source pc-id))
-                                        (async/close! control-chan)
-                                        (async/close! frame-chan))
-                                      :changed
-                                      (if (and (= cur-target prev-target)
-                                               (not= cur-frame nil))
-                                        (recur pc-id)
-                                        (let [response-chan (fp/request-frame-chan source cur-target priority)
-                                              {stand-in :stand-in new-pc-id :precache-id} (async/<! response-chan)
-                                              {image-data :image-data frame :frame} stand-in]
-                                          (async/close! response-chan)
-                                          (om/set-state! owner {:image-data image-data :frame frame :control control-chan})
-                                          (when pc-id (fp/cancel-precache source pc-id))
-                                          (recur new-pc-id))))
+              (= chan control-chan) (do
+                                      (println "control msg")
+                                      (case received-data
+                                       :stop
+                                       (do
+                                         (when pc-id
+                                           (println "STOP")
+                                           (fp/cancel-precache source pc-id))
+                                         (async/close! control-chan)
+                                         (async/close! frame-chan))
+                                       :changed
+                                       (if (and (= cur-target prev-target)
+                                                (not= cur-frame nil))
+                                         (do (println "CCC no change") (recur pc-id))
+                                         (let [response-chan (fp/request-frame-chan source cur-target priority)
+                                               {stand-in :stand-in new-pc-id :precache-id} (async/<! response-chan)
+                                               {image-data :image-data frame :frame} stand-in]
+                                           (println "CCC request" cur-target new-pc-id "cancel" pc-id)
+                                           (async/close! response-chan)
+                                           (om/set-state! owner {:image-data image-data :frame frame :control control-chan})
+                                           (when pc-id (fp/cancel-precache source pc-id))
+                                           (recur new-pc-id)))))
               (= cur-target cur-frame) (recur pc-id)
               (= chan frame-chan) (if-let [{frame :frame image-data :image-data} received-data]
                                     (cond

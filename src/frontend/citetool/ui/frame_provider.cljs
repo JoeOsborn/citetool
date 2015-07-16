@@ -67,33 +67,35 @@
 
 #_(defn range->min-max-steps [r] r)
 
-(defn sorted-index-of- [cache f left right d]
+(defn sorted-index-of- [svec key val left right depth]
   (let [len (- right left)]
     (cond
-      (>= d 10) (count cache)
+      ;(>= depth (count svec)) (do (println "infinite loop?" svec val left right) (count svec))
       (= len 0) left
       true (let [mid (+ left (u/floor (/ len 2)))
-                 mid-f (:frame (get cache mid))]
+                 mid-val (key (get svec mid))]
              (cond
-               (= f mid-f) mid
-               (< f mid-f) (sorted-index-of- cache f left mid (inc d))
-               (> f mid-f) (sorted-index-of- cache f (inc mid) right (inc d))
-               true (do (println "impossible cond" f mid mid-f) (throw "bluh")))))))
+               (= val mid-val) mid
+               (< val mid-val) (sorted-index-of- svec key val left mid (inc depth))
+               (> val mid-val) (sorted-index-of- svec key val (inc mid) right (inc depth))
+               true (do (println "impossible cond" key val mid mid-val) (throw "bluh")))))))
 
-(defn sorted-index-of [cache f]
-  (let [len (count cache)]
-    (sorted-index-of- cache f 0 len 0)))
+(defn sorted-index-of [svec key val]
+  (let [len (count svec)]
+    (sorted-index-of- svec key val 0 len 0)))
 
-(defn sorted-insert [cache frame]
-  (let [insert-idx (sorted-index-of cache (:frame frame))]
-    (if (or (>= insert-idx (count cache))
-            (= (:frame frame) (:frame (get cache insert-idx))))
-      (assoc cache insert-idx frame)
-      (let [[l r] (split-at insert-idx cache)]
-        (vec (concat l [frame] r))))))
+(defn sorted-insert [svec key duplicate-keys? record]
+  (let [insert-idx (sorted-index-of svec key (key record))]
+    (if (and
+          (not duplicate-keys?)
+          (or (>= insert-idx (count svec))
+              (= (key record) (key (get svec insert-idx)))))
+      (assoc svec insert-idx record)
+      (let [[l r] (split-at insert-idx svec)]
+        (vec (concat l [record] r))))))
 
 (defn get-best-standin [cache f]
-  (let [idx (sorted-index-of cache f)]
+  (let [idx (sorted-index-of cache :frame f)]
     #_(println "index of" f "in" cache "=" idx)
     (cond
       (empty? cache) {:image-data nil :frame -1000}
@@ -107,14 +109,14 @@
                r)))))
 
 (defn cache-get-exact [cache f]
-  (let [idx (sorted-index-of cache f)
+  (let [idx (sorted-index-of cache :frame f)
         s (get cache idx)]
     (if (= (:frame s) f)
       s
       nil)))
 
 (defn cache-update-birthday [cache f date]
-  (let [idx (sorted-index-of cache f)
+  (let [idx (sorted-index-of cache :frame f)
         frame (get cache idx)
         frame-f (:frame frame)]
     (if (= frame-f f)
@@ -153,19 +155,18 @@
                   (map :range actives))]
     (assoc pc :effective-range r)))
 
-(def queue-make (partial sorted-set-by #(compare (:priority %1) (:priority %2))))
+; "highest" priority is highest number. sorts towards end.
+(def queue-make vector)
 
 (defn queue-drop-with-id [queue pc-id]
-  (if-let [found-precache (u/memberp #(= (:precache-id %) pc-id) queue)]
-    (disj queue found-precache)
-    queue))
+  (filterv #(not= (:precache-id %) pc-id) queue))
 
-(def queue-push conj)
+(defn queue-push [queue pc]
+  (sorted-insert queue :priority true pc))
 
-(def queue-first first)
+(def queue-first peek)
 
-(defn queue-pop [queue]
-  (disj queue (queue-first queue)))
+(def queue-pop pop)
 
 #_(def queue-split split-at)
 
@@ -181,7 +182,7 @@
 
 (defn maybe-advance-queue! [cache queue providers]
   (if-let [pc (queue-first queue)]
-    (let [usable-providers (if (= (:priority pc) 0)
+    (let [usable-providers (if (= (:priority pc) 10)
                              providers
                              (assoc-in providers [0 1] :reserved))]
       (if-let [free-src-i (u/findp #(= (second %) nil) usable-providers)]
@@ -192,9 +193,11 @@
           (if (empty? r)
             (do
               ;todo: unassociate pc with images in cache
+              (println "empty effective range for" pc)
               (maybe-advance-queue! cache new-queue providers))
             (let [[provider _] (get providers free-src-i)
                   new-providers (assoc-in providers [free-src-i 1] (assoc pc :effective-range r))]
+              (println "send off request" {:ranges (range->min-max-steps r)})
               (async/put! (:in provider) {:ranges (range->min-max-steps r)})
               (maybe-advance-queue! cache new-queue new-providers))))
         [cache queue providers]))
@@ -209,8 +212,6 @@
   (split-interval- m n split []))
 
 (defn make-frame-source [providers split]
-  ; pull dispatching stuff out of tc-frame-provider and into here. returns :out mult :in chan map.
-  ; the actual provider will also return an :out :in map but the out won't be multiplexed.
   (let [pouts (mapv :out providers)
         sin (async/chan)
         sout (async/chan)
@@ -235,7 +236,7 @@
                                  (async/put! outc {:stand-in {:image-data image-data :frame frame}})
                                  (if (= f frame)
                                    (do
-                                     #_(println "skip request for" f)
+                                     (println "skip request for" f)
                                      (recur (cache-update-birthday cache f (u/now)) precache-id queue providers))
                                    (do                      ;send standin and precache with set ID and increment pcid
                                      (async/put! sin {:type                :precache-frames
@@ -270,7 +271,7 @@
                                    ;todo: do this much smarter!
                                    (doseq [f (range-make m n step)]
                                      (when-let [frame (cache-get-exact new-cache f)]
-                                       ; (println "rebounce" f)
+                                       (println "rebounce" f)
                                        (async/put! sout frame)))
                                    (if (empty? pcs)
                                      (do
@@ -278,6 +279,7 @@
                                          (async/put! outc {:precache-ids []}))
                                        (recur new-cache precache-id new-queue providers))
                                      (do
+
                                        (when-let [outc (:precache-id-channel msg)]
                                          (async/put! outc {:precache-ids (map :precache-id pcs)}))
                                        (let [[new-cache new-queue new-providers] (maybe-advance-queue! new-cache
@@ -302,7 +304,7 @@
                   new-queue queue
                   kill-date (- now 10000)                   ; cache hard time limit
                   frame (assoc frame :birthday now)
-                  new-cache (sorted-insert cache frame)
+                  new-cache (sorted-insert cache :frame false frame)
                   new-cache (if (> (count new-cache) 100)   ; cache soft size limit
                               (trim-cache new-cache kill-date)
                               new-cache)]
@@ -319,7 +321,6 @@
                        (assoc-in providers [prov-i 1] new-pc))))))))
     {:out (async/mult sout) :in sin}))
 
-; Source should be an {:out mult :in chan} map
 (defn frame-broadcast-channel [source]
   (let [resp (async/chan)]
     (async/tap (:out source) resp)
@@ -329,9 +330,9 @@
   (let [standin-resp (async/chan)
         req-chan (async/chan)]
     (async-m/go
-      (async/>! (:in source) {:type :request-frame
-                              :frame frame
-                              :priority priority
+      (async/>! (:in source) {:type            :request-frame
+                              :frame           frame
+                              :priority        priority
                               :standin-channel standin-resp})
       (let [{standin :stand-in} (async/<! standin-resp)]
         (if (= (:frame standin) frame)
@@ -346,9 +347,9 @@
 
 (defn precache [source m n step p]
   (let [resp (async/chan)]
-    (async/put! (:in source) {:type :precache-frames
-                              :range [m n step]
-                              :priority p
+    (async/put! (:in source) {:type                :precache-frames
+                              :range               [m n step]
+                              :priority            p
                               :precache-id-channel resp})
     resp))
 
