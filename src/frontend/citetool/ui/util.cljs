@@ -1,6 +1,8 @@
 (ns citetool.ui.util)
 
-(def active-debugs #{})
+(def active-debugs #{
+                     ;:tc-frames
+                     })
 
 (defn debug [key & more]
   (when (active-debugs key)

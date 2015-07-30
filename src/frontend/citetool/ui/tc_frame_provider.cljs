@@ -1,4 +1,4 @@
-(ns ^:figwheel-always citetool.ui.tc-frame-provider
+(ns citetool.ui.tc-frame-provider
   (:require [clojure.browser.dom]
             [citetool.ui.util :as u]
             [cljs.core.async :as async])
@@ -26,7 +26,7 @@
 (defn frame-image-provider [duration]
   (let [requests (async/chan)
         responses (async/chan)
-        fake-ms-per-frame 16]
+        fake-ms-per-frame 8]
     (async-m/go-loop
       [last-frame 0]
       (let [request (async/<! requests)]
@@ -36,6 +36,7 @@
               (println "empty request" request)
               (recur last-frame))
             (do
+              (u/debug :tc-frames "received req" rs)
               (async/<! (async/timeout (if (>= (ffirst rs) last-frame)
                                          ;simulate running from last-frame to frame
                                          (* fake-ms-per-frame (- (ffirst rs) last-frame))
