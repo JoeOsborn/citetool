@@ -96,14 +96,14 @@
 
 (defn get-best-standin [cache f]
   (let [idx (sorted-index-of cache :frame f)]
-    #_(println "index of" f "in" cache "=" idx)
+    (u/debug :standins-data"index of" f "in" cache "=" idx)
     (cond
       (empty? cache) {:image-data nil :frame -1000}
       (>= idx (count cache)) (last cache)
       (= idx 0) (first cache)
       true (let [l (get cache (dec idx))
                  r (get cache idx)]
-             #_(println "closer l f r" (:frame l) f (:frame r) (u/closer (:frame l) f (:frame r)))
+             (u/debug :standins-data "closer l f r" (:frame l) f (:frame r) (u/closer (:frame l) f (:frame r)))
              (if (u/closer? (:frame l) f (:frame r))
                l
                r)))))
@@ -193,11 +193,11 @@
           (if (empty? r)
             (do
               ;todo: unassociate pc with images in cache
-              (println "empty effective range for" pc)
+              (u/debug :precache "empty effective range for" pc)
               (maybe-advance-queue! cache new-queue providers))
             (let [[provider _] (get providers free-src-i)
                   new-providers (assoc-in providers [free-src-i 1] (assoc pc :effective-range r))]
-              (println "send off request" {:ranges (range->min-max-steps r)})
+              (u/debug :precache "send off request" {:ranges (range->min-max-steps r)})
               (async/put! (:in provider) {:ranges (range->min-max-steps r)})
               (maybe-advance-queue! cache new-queue new-providers))))
         [cache queue providers]))
@@ -227,7 +227,7 @@
           (if (= sin port)
             (let [msg val
                   {mtype :type} msg]
-              (println "got control message" msg)
+              (u/debug :precache "got control message" msg)
               (case mtype
                 :request-frame (let [f (:frame msg)
                                      p (:priority msg)
@@ -236,7 +236,7 @@
                                  (async/put! outc {:stand-in {:image-data image-data :frame frame}})
                                  (if (= f frame)
                                    (do
-                                     (println "skip request for" f)
+                                     (u/debug :precache "skip request for" f)
                                      (recur (cache-update-birthday cache f (u/now)) precache-id queue providers))
                                    (do                      ;send standin and precache with set ID and increment pcid
                                      (async/put! sin {:type                :precache-frames
@@ -271,7 +271,7 @@
                                    ;todo: do this much smarter!
                                    (doseq [f (range-make m n step)]
                                      (when-let [frame (cache-get-exact new-cache f)]
-                                       (println "rebounce" f)
+                                       (u/debug :precache "rebounce" f)
                                        (async/put! sout frame)))
                                    (if (empty? pcs)
                                      (do
@@ -308,7 +308,7 @@
                   new-cache (if (> (count new-cache) 100)   ; cache soft size limit
                               (trim-cache new-cache kill-date)
                               new-cache)]
-              (println "B broadcast" frame)
+              (u/debug :precache "B broadcast" frame)
               (async/put! sout frame)
               (if (range-empty? range)
                 (let [[new-cache new-queue new-providers] (maybe-advance-queue! new-cache

@@ -8,7 +8,8 @@
             [citetool.ui.frame-provider :as fp]
             [citetool.ui.tc-frame-provider :as fip]
             [citetool.ui.async-image :as async-image]
-            [citetool.ui.scroll-bar :as scroll-bar]))
+            [citetool.ui.scroll-bar :as scroll-bar])
+  (:require-macros [cljs.core.async.macros :as async-m]))
 
 (enable-console-print!)
 
@@ -31,12 +32,16 @@
                                                               (fip/frame-image-provider test-duration)]
                                                              1000)
                           :metadata    {}
-                          :timeline    {:context        test-duration
-                                        :source-context test-duration
-                                        :target-context test-duration
-                                        :scroll-x       0
-                                        :now            0
-                                        :scroll-width   800}
+                          :timeline    {:context           test-duration
+                                        :source-context    test-duration
+                                        :target-context    test-duration
+                                        :scroll-x          0
+                                        :now               0
+                                        :scroll-width      800
+                                        :transport-chan    (async/chan)
+                                        :playing           false
+                                        :following         true
+                                        :playback-last-now 0}
                           :annotations []
                           :edits       []
                           :duration    test-duration}))
@@ -100,11 +105,12 @@
       :scroll-x clipped-new-scroll-x)))
 
 (defn jump-to-frame! [frame autoscroll?]
-  (println "jump to" frame)
+  (u/debug :transport "jump to" frame)
   (om/transact! (om/root-cursor app-state) [:timeline]
                 (fn [old-timeline]
                   (let [new-timeline (assoc old-timeline
-                                       :now (u/clip 0 frame (dec (:duration @app-state))))]
+                                       :now (u/clip 0 frame (dec (:duration @app-state)))
+                                       :playback-last-now (.now (.-performance js/window)))]
                     (if autoscroll?
                       (autoscroll-x-playhead old-timeline
                                              new-timeline)
@@ -137,13 +143,13 @@
         (start-scrolling-context!)))))
 
 (defn stop-scrolling-context! []
-  (when -context-scroller (.cancelAnimationFrame js/window -context-scroller-fn)))
+  (when -context-scroller (.cancelAnimationFrame js/window -context-scroller)))
 (defn start-scrolling-context! []
   (stop-scrolling-context!)
   (set! -context-scroller (.requestAnimationFrame js/window -context-scroller-fn)))
 
 (defn change-context! [ctx scroll-focus-frame]
-  (println "change context" ctx)
+  (u/debug :zooming "change context" ctx)
   (let [target (clip-context ctx (:scroll-width (:timeline @app-state)) (:duration @app-state))]
     (set! -scroll-focus-frame scroll-focus-frame)
     (om/transact! (om/root-cursor app-state) [:timeline]
@@ -152,16 +158,10 @@
                                 :source-context (:context old)})))
     (start-scrolling-context!)))
 
-; Do this goofy declare/remove/define/add dance to make sure we don't put two
-; event handlers on the document.
-(declare handle-keyboard!)
-(.removeEventListener js/document "keydown" handle-keyboard!)
-(defn handle-keyboard! [e]
-  (println "K:" (.-keyCode e) "shift:" (.-shiftKey e))
+(defn jump-back! [big-jump]
   (let [now (:now (:timeline @app-state))
         context (:context (:timeline @app-state))
         duration (:duration @app-state)
-        scroll-x (get-in @app-state [:timeline :scroll-x])
         scroll-width (:scroll-width (:timeline @app-state))
         skip (current-skip-level scroll-width context)
         shown-ticks (u/frame-skipped-frames skip
@@ -170,9 +170,72 @@
                                             0
                                             (u/frame-offset-x (dec duration) scroll-width context)
                                             duration)
+        nearest-tick-left (u/prev-item now shown-ticks)]
+    ; pause if playing
+    (om/transact! (om/root-cursor app-state) [:timeline :playing] (fn [_] false))
+    (jump-to-frame! (if big-jump
+                      nearest-tick-left
+                      (dec now))
+                    (get-in @app-state [:timeline :following]))))
+
+(defn jump-forward! [big-jump]
+  (let [now (:now (:timeline @app-state))
+        context (:context (:timeline @app-state))
+        duration (:duration @app-state)
+        scroll-width (:scroll-width (:timeline @app-state))
+        skip (current-skip-level scroll-width context)
+        shown-ticks (u/frame-skipped-frames skip
+                                            scroll-width
+                                            context
+                                            0
+                                            (u/frame-offset-x (dec duration) scroll-width context)
+                                            duration)
+        nearest-tick-right (u/next-item now shown-ticks)]
+    ; pause if playing
+    (om/transact! (om/root-cursor app-state) [:timeline :playing] (fn [_] false))
+    (jump-to-frame! (if big-jump
+                      nearest-tick-right
+                      (inc now))
+                    (get-in @app-state [:timeline :following]))))
+
+(defn toggle-play-pause! []
+  (om/transact! (om/root-cursor app-state) [:timeline]
+                (fn [tl]
+                  (assoc tl :playing (not (:playing tl))
+                            :playback-last-now (.now (.-performance js/window))))))
+
+(defn toggle-follow! []
+  (om/transact! (om/root-cursor app-state) [:timeline :following] not))
+
+(declare play-raf)
+(when play-raf (.cancelAnimationFrame js/window play-raf))
+(swap! app-state (fn [old]
+                   (assoc-in old [:timeline :playback-last-now]
+                             (.now (.-performance js/window)))))
+(defn- playback-frame- [now]
+  (when (get-in @app-state [:timeline :playing])
+    (let [old-now (get-in @app-state [:timeline :playback-last-now])
+          delta (/ (- now old-now) 1000.0)
+          time-per-frame (/ 1.0 30.0)
+          ticks (u/floor (/ delta time-per-frame))]
+      (when (> ticks 0)
+        (jump-to-frame! (+ (get-in @app-state [:timeline :now]) ticks)
+                        (get-in @app-state [:timeline :following])))))
+  (set! play-raf (.requestAnimationFrame js/window playback-frame-)))
+(set! play-raf (.requestAnimationFrame js/window playback-frame-))
+
+; Do this goofy declare/remove/define/add dance to make sure we don't put two
+; event handlers on the document.
+(declare handle-keyboard!)
+(.removeEventListener js/document "keydown" handle-keyboard!)
+(defn handle-keyboard! [e]
+  (println "K:" (.-keyCode e) "shift:" (.-shiftKey e))
+  (let [context (:context (:timeline @app-state))
+        duration (:duration @app-state)
+        scroll-x (get-in @app-state [:timeline :scroll-x])
+        scroll-width (:scroll-width (:timeline @app-state))
+        now (:now (:timeline @app-state))
         max-ticks (max-tick-count scroll-width)
-        nearest-tick-left (u/prev-item now shown-ticks)
-        nearest-tick-right (u/next-item now shown-ticks)
         context-step (u/floor (* duration 0.05))
         frame-skip (current-skip-level scroll-width context)
         nearest-skip-down (u/prev-item frame-skip skip-levels)
@@ -193,14 +256,9 @@
                             (* nearest-skip-down max-ticks)
                             (- context context-step))
                           focused-frame)
-      37 (jump-to-frame! (if shift                          ; left
-                           nearest-tick-left
-                           (dec now))
-                         true)
-      39 (jump-to-frame! (if shift                          ; right
-                           nearest-tick-right
-                           (inc now))
-                         true)
+      37 (jump-back! shift)                                 ; left
+      39 (jump-forward! shift)                              ; right
+      32 (toggle-play-pause!)
       true)
     (.preventDefault e)))
 
@@ -296,7 +354,7 @@
             skip (:skip data)
             is-last (= frame (dec duration))]
         (when-not skip
-          (println "f" frame "ox" frame-x)
+          (u/debug :previews "f" frame "ox" frame-x)
           (om/build async-image/async-image
                     {:now      frame
                      :source   (:source data)
@@ -311,13 +369,15 @@
                                            {:right 8}
                                            {:left frame-x}))}}))))))
 
-(defn playback-controls [data _owner]
+(defn playback-controls [data owner]
   (reify
     om/IRender
     (render [_]
       (let [scroll-width (get-in data [:timeline :scroll-width])
             now (get-in data [:timeline :now])
             duration (get-in data [:duration])
+            playing (get-in data [:timeline :playing])
+            following (get-in data [:timeline :following])
             h 28
             btn-width 28
             tc-width (u/timecode-label-width (u/frame->timecode duration duration) 8)
@@ -342,24 +402,48 @@
                                    :width           w
                                    :height          h
                                    :backgroundColor "black"}})
-                 (dom/div (clj->js {:style btn-style})
+                 (dom/div (clj->js {:style   btn-style
+                                    :onClick (fn [e]
+                                               (jump-back! (.-shiftKey e))
+                                               (.preventDefault e)
+                                               (.stopPropagation e))})
                           "bak")
-                 (dom/div (clj->js {:style btn-style})
+                 (dom/div (clj->js {:style   (assoc btn-style :backgroundColor
+                                                              (if playing :red (:backgroundColor btn-style)))
+                                    :onClick (fn [e]
+                                               (toggle-play-pause!)
+                                               (.preventDefault e)
+                                               (.stopPropagation e))})
                           "p/p")
-                 (dom/div (clj->js {:style btn-style})
+                 (dom/div (clj->js {:style   btn-style
+                                    :onClick (fn [e]
+                                               (jump-forward! (.-shiftKey e))
+                                               (.preventDefault e)
+                                               (.stopPropagation e))})
                           "fwd")
-                 (dom/div (clj->js {:style tc-style})
+                 (dom/div (clj->js {:style   tc-style
+                                    :onClick (fn [e]
+                                               ;todo: scroll to (center?) playhead
+                                               (jump-to-frame! (:now (om/get-props owner)) true)
+                                               (.preventDefault e)
+                                               (.stopPropagation e)
+                                               )})
                           (u/frame->timecode now duration))
-                 (dom/div (clj->js {:style (assoc btn-style
-                                             :position :absolute
-                                             :left (- (* 3 btn-width) 1)
-                                             :top (/ h 4)
-                                             :width (/ btn-width 2)
-                                             :height (/ h 2)
-                                             :lineHeight (str (/ h 2) "px")
-                                             :fontSize 12
-                                             :border "1px solid black")})
-                          "lnk"))))))
+                 (dom/div (clj->js {:style   (assoc btn-style
+                                               :position :absolute
+                                               :left (- (* 3 btn-width) 1)
+                                               :top (/ h 4)
+                                               :width (/ btn-width 2)
+                                               :height (/ h 2)
+                                               :lineHeight (str (/ h 2) "px")
+                                               :fontSize 12
+                                               :border "1px solid black"
+                                               :backgroundColor (if following :red (:backgroundColor btn-style)))
+                                    :onClick (fn [e]
+                                               (toggle-follow!)
+                                               (.preventDefault e)
+                                               (.stopPropagation e))})
+                          "fol"))))))
 
 (defn timeline [data owner {h :height y :y}]
   (reify

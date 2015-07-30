@@ -1,5 +1,11 @@
 (ns citetool.ui.util)
 
+(def active-debugs #{})
+
+(defn debug [key & more]
+  (when (active-debugs key)
+    (apply println more)))
+
 (defn now [] (.now js/Date))
 
 #_(defn multiple-of? [n divisor]

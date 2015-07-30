@@ -17,7 +17,7 @@
       (.fillRect ctx 0 0 w h)
       (set! (.-textAlign ctx) "center")
       (set! (.-fillStyle ctx) "rgb(255,0,0)")
-      (println "draw frame:" (str frame))
+      (u/debug :tc-frames "draw frame:" (str frame))
       (set! (.-font ctx) (str f "px serif"))
       (.fillText ctx (str "fm " frame) (/ w 2) (+ (/ h 4) (/ f 4)) w)
       (.fillText ctx (str (u/frame->timecode frame duration)) (/ w 2) (+ (* 3 (/ h 4)) (/ f 4)) w)
@@ -43,7 +43,7 @@
                                          (* fake-ms-per-frame (ffirst rs)))))
               (doseq [[m n step] rs
                       frame (range m (inc n) step)]
-                (println "req made" frame)
+                (u/debug :tc-frames "req made" frame)
                 (async/>! responses {:frame frame, :image-data (frame-image-data frame duration)})
                 ; not quite correct, sort of double counts n
                 (async/<! (async/timeout (* fake-ms-per-frame step))))
